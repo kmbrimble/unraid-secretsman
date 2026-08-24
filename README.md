@@ -1,18 +1,38 @@
 # unraid-secretsman
 
 Central secret storage for Unraid Docker templates, so a secret typed into the Docker GUI
-doesn't end up in plaintext on your flash drive.
+doesn't end up in plaintext everywhere that template gets copied, pasted, or backed up.
 
 ## The problem
 
-Today, when you type a password or API key into an Unraid Docker template's variable field, it
-is written in plaintext into `/boot/config/plugins/dockerMan/templates-user/my-*.xml` — on the
-flash drive. That means:
+Today, a password or API key typed into an Unraid Docker template's variable field shows up in
+plaintext in three places at once:
 
-- it's in every flash backup you take or that gets taken for you,
-- it's readable by anything with flash access, and
-- the GUI's password-masking (the dots in the field) is **cosmetic only** — it does not encrypt
-  or protect the stored value in any way.
+- the `docker run` command the GUI displays back to you,
+- the template XML at `/boot/config/plugins/dockerMan/templates-user/my-*.xml`, and
+- any log that captures either of the above.
+
+The GUI's password-masking (the dots in the field) is **cosmetic only** — it doesn't touch the
+stored value, the displayed command, or the XML.
+
+That template XML and that command string are exactly the things people routinely copy and
+paste — into chat, into a GitHub issue, into a forum post asking for help — and it is very easy
+to forget a value is sitting in there unredacted until after you've hit send.
+
+With this plugin, both artefacts stay clean by construction: the template XML holds only
+`!secret ns/key`, and the command the GUI displays holds only
+`--env-file=/run/secretsman/env/<container>.env`. There is nothing to redact because the secret
+was never in either string. That's the primary reason this exists.
+
+**Limit, stated plainly:** this covers the template and the displayed command — the two
+artefacts people actually paste around. It does not, and cannot, stop you from copying a value
+straight out of the store editor or out of a running container's own configuration; nothing
+automated protects you from *that* copy-paste.
+
+It also closes a second, related problem: everything above is likewise true of your **flash
+backup**, which is a full copy of that same template XML. A secret typed into the GUI today is
+in plaintext in every flash backup you take, or that gets taken for you, for as long as that
+backup exists.
 
 ## What this does
 
@@ -49,14 +69,37 @@ isn't built yet; see `CLAUDE.md` for the roadmap).
 
 Read this before you rely on this plugin.
 
-- **`!secret` protects the command string and flash — not the container's runtime
-  environment.** The resolved value is still passed into the container as a real environment
-  variable. It remains fully visible via `docker inspect <container>` and via
-  `/proc/<pid>/environ` for anyone with root or container-exec access to the host. This closes
-  the flash-backup leak; it does not make the secret disappear from the running system.
-- **`!secretfile` is the hardened path.** The value never becomes an environment variable at
-  all — only a file path does — so it doesn't appear in `docker inspect` or `/proc/<pid>/environ`.
-  Use it for anything that supports the `_FILE` convention.
+**What `!secret` closes — exposures that leave the machine:**
+
+- flash backups, including ones taken automatically
+- the template XML, when it's shared in an issue, a forum post, or pasted into chat
+- the `docker run` command the GUI echoes back to you, and any log that captures it
+
+**What `!secret` does *not* close — exposures that already require root or docker-socket
+access on the host:**
+
+- `docker inspect <container>`
+- `/proc/<pid>/environ`
+
+`!secret` resolves to a real environment variable inside the container, so it's visible through
+either of those. This is a smaller marginal exposure than it looks: anyone who can read
+`docker inspect` output or `/proc/<pid>/environ` already has root or docker-group access to the
+Unraid host — and with that access, they can simply read `store.json` directly. The plugin isn't
+leaving a hole next to a locked door; it's declining to also guard a door that access already
+opens.
+
+**Why an env-var secret can't be hidden from `docker inspect` without the app's cooperation:**
+something inside the container has to read the file and hand the value to the application, and
+if that something is a wrapper script that re-exports it as an environment variable, the value
+reappears in `/proc/<pid>/environ` for whatever process it hands off to. An entrypoint shim
+*moves* the exposure from `docker inspect` to `/proc`; it doesn't remove it. The only way to
+actually avoid this is for the application itself to read the secret from a file and never turn
+it into an environment variable — which is exactly the `_FILE` / `FILE__` convention.
+
+- **`!secretfile` is the hardened path**, for exactly that reason. The value never becomes an
+  environment variable at all — only a file path does — so it closes both categories above:
+  `docker inspect` and `/proc/<pid>/environ` never see it either. Use it for anything that
+  supports the `_FILE` convention.
 - **This plugin patches OS files.** It surgically modifies
   `/usr/local/emhttp/plugins/dynamix.docker.manager/include/Helpers.php`, a stock Unraid file
   that is restored from the OS image on every boot, which is why the patch has to reapply at

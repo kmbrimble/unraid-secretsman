@@ -113,6 +113,12 @@ version entity and md5 are bumped per release.
   docker autostart; the `.plg` itself, packaging, and the GitHub Release shipping model above.
   **Requires the `RECOVERY.md` drill to be run and confirmed working before it ships**, and
   again after every subsequent change to the patch layer.
+  **Also required: a test asserting the resolved value appears nowhere in the command string
+  dockerMan renders, or in the output it displays.** The Phase 1 never-log tests only cover
+  `src/secretsman.php`'s own strings (its exceptions, its return values) — they say nothing
+  about what the patched `xmlToCommand()` actually hands back to the GUI. That's the property
+  that matters: what the user *sees* has to be clean, not just what the library itself emits.
+  This has to run against the patched function's real return value, not a mock of it.
 - **Phase 3 (not yet scoped) — GUI page** for managing the store (add/edit/remove secrets)
   without hand-editing `store.json` over SSH.
 
