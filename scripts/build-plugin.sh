@@ -16,8 +16,15 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${1:-$(date +%Y.%m.%d)}"
 NAME="unraid-secretsman"
+# Slackware's upgradepkg/installpkg extracts a package relative to /, not
+# relative to any "plugins" convention — the full absolute destination path
+# has to be baked into the archive itself, or files land at /unraid-secretsman
+# instead of /usr/local/emhttp/plugins/unraid-secretsman. Confirmed live: this
+# exact mistake caused the Phase 2 Gate 2 .plg install failure (apply_patch.php
+# "Could not open input file", exit 1) — see docs/phase2-resume.md.
+INSTALL_ROOT="usr/local/emhttp/plugins/$NAME"
 BUILD_DIR="$(mktemp -d)"
-PKG_DIR="$BUILD_DIR/$NAME"
+PKG_DIR="$BUILD_DIR/$INSTALL_ROOT"
 OUT_DIR="$REPO_ROOT/dist"
 
 trap 'rm -rf "$BUILD_DIR"' EXIT
@@ -37,7 +44,7 @@ cp -r "$REPO_ROOT"/reference/. "$PKG_DIR/reference/"
 
 mkdir -p "$OUT_DIR"
 TXZ_PATH="$OUT_DIR/$NAME-$VERSION.txz"
-( cd "$BUILD_DIR" && tar -cJf "$TXZ_PATH" "$NAME" )
+( cd "$BUILD_DIR" && tar -cJf "$TXZ_PATH" usr )
 
 MD5=$(md5sum "$TXZ_PATH" | awk '{print $1}')
 echo "$MD5" > "$OUT_DIR/$NAME.md5"

@@ -728,6 +728,39 @@ t('plg: FILE elements use the installer\'s actual property names (INLINE, not In
     }
 });
 
+t('plg: the packaged .txz extracts to the real absolute install path, not a bare package-name root', function () {
+    // Caught live during Gate 2: scripts/build-plugin.sh archived the tree
+    // rooted at "unraid-secretsman/...". Slackware's upgradepkg/installpkg
+    // extracts packages relative to /, not relative to any "plugins"
+    // convention — so this landed everything at /unraid-secretsman instead
+    // of /usr/local/emhttp/plugins/unraid-secretsman, and apply_patch.php
+    // then failed with "Could not open input file" (exit 1) at boot,
+    // silently, since Unraid's installer only captures stdout, not stderr.
+    // This runs the real packaging script and inspects the real archive —
+    // not a description of what it should do.
+    $dir = scratch_dir();
+    exec('bash ' . escapeshellarg(__DIR__ . '/../scripts/build-plugin.sh') . ' test-version 2>&1', $out, $code);
+    assert_eq(0, $code, 'build-plugin.sh must succeed: ' . implode("\n", $out));
+
+    $txz = __DIR__ . '/../dist/unraid-secretsman-test-version.txz';
+    assert_true(is_file($txz), 'expected package not found at ' . $txz);
+
+    exec('tar -tJf ' . escapeshellarg($txz), $entries, $tarCode);
+    assert_eq(0, $tarCode, 'tar -tJf must succeed listing the package');
+    assert_true(count($entries) > 0, 'package must not be empty');
+
+    foreach ($entries as $entry) {
+        assert_true(
+            str_starts_with($entry, 'usr/local/emhttp/plugins/unraid-secretsman/') || $entry === 'usr/local/emhttp/plugins/unraid-secretsman/'
+                || $entry === 'usr/' || $entry === 'usr/local/' || $entry === 'usr/local/emhttp/' || $entry === 'usr/local/emhttp/plugins/',
+            "package entry '$entry' is not rooted at usr/local/emhttp/plugins/unraid-secretsman/ — would extract to the wrong place"
+        );
+    }
+
+    @unlink($txz);
+    @unlink(__DIR__ . '/../dist/unraid-secretsman.md5');
+});
+
 // ---------------------------------------------------------------------------
 // Plugin scripts (plugin/scripts/) — Phase 2
 // ---------------------------------------------------------------------------
