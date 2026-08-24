@@ -1,11 +1,189 @@
-# Phase 2 resume brief — GATE 2
+# Phase 2 resume brief — GATE 2 (round 2, after the first reboot)
+
+## UPDATE — the first Gate 2 reboot already happened. Read this before anything below.
+
+The sections below this point were written *before* that reboot and describe the state as it
+stood then. They're kept for their evidence (steps 3–5 are still valid, still true) but **the
+"current state" they describe is stale — do not act on it without reading this update first.**
+
+**What the first reboot actually showed:**
+1. **The `.plg` install failed this boot** — `rc.local: plugin: run failed: '/bin/bash'
+   returned 1` right after the package extracted. `Helpers.php` came back **stock**
+   (`9a45421b387b733ad260e204308baa69`), the plugin tree never landed at
+   `/usr/local/emhttp/plugins/unraid-secretsman/`, and the `.plg` was quarantined to
+   `/boot/config/plugins-error/`. **Boot-time re-patch was NOT proven this round — the plugin
+   never installed, so nothing was there to prove it.**
+2. **`!secretfile` repopulation timing was NOT proven either**, for the same reason —
+   `disks_mounted` never had a resolver to run, since the plugin install failed before
+   `apply_patch.php` (or anything after it) ran. `secretsman-smoketest` itself didn't survive
+   the reboot at all (see below) — even if the plugin had installed, there'd have been nothing
+   left to repopulate.
+3. **An unrelated pre-existing plugin (`RAM-DISK-Dockerlog`) caused real damage**, exposed by
+   an unclean shutdown: it kept `/var/lib/docker/containers` on tmpfs and only committed to
+   real storage via a periodic sync that turned out to be badly stale (~6 hours) plus a
+   clean-shutdown sync that never got a chance to run. Three real containers
+   (Radarr, TimeMachine, Unpackerr) came back with corrupted containerd state
+   (`RWLayer of container ... is unexpectedly nil`); `secretsman-smoketest` didn't come back
+   at all — it was the most recently created container of the session, least likely to have
+   been captured by any stale sync. **None of this was caused by secretsman** — the patch
+   never applied this boot, and `repopulate.php`/`common.php` make exactly one `exec()` call in
+   total, to Unraid's own notify script, never to `docker` — this was investigated and ruled
+   out structurally, not just by absence of evidence.
+
+**What's been done about it, all before this document was updated:**
+- Radarr, TimeMachine, and Unpackerr were recreated from their saved templates (via the real
+  `scripts/update_container` path) and started — verified healthy, new container IDs, clean
+  logs.
+- `secretsman-smoketest` and all its residue (template, store entry, `/run/secretsman`
+  remnant, `unraid-autostart` entry, backup file) were removed — it was disposable and is
+  gone.
+- **`RAM-DISK-Dockerlog` has been fully removed** — see "RAM-DISK-Dockerlog removal" below for
+  the full mechanism, why it mattered, and exactly what was done. `/var/lib/docker/containers`
+  is *currently* still the live tmpfs mount (untouched, still backing running containers —
+  disrupting it live would need stopping the docker service, which is out of scope for this
+  session), but every future boot/docker-restart will find no trace of the plugin and will use
+  the real, already-freshened btrfs directory directly. **Docker's native log rotation
+  (`max-size=10m`, `max-file=2`) was already active independently — confirmed via
+  `docker inspect`, nothing needed configuring to replace the plugin's benefit.**
+- The `.plg` install bug itself is **not yet root-caused** — Unraid's installer only captures
+  the script's stdout, not stderr, so the actual failure is still unknown. This is the next
+  thing to investigate, before any second attempt to patch the live file.
+
+**What this means for the next reboot:** it will carry **two independent changes** at once —
+the `RAM-DISK-Dockerlog` removal taking effect (`/var/lib/docker/containers` should come up as
+a real btrfs directory, no tmpfs) **and**, once the `.plg` bug is found and fixed, a retried
+boot-time re-patch test. If something goes wrong on that boot, **both are in play** — don't
+assume it's one or the other without checking both independently. See "Post-reboot check:
+RAM-DISK-Dockerlog removal" below, kept deliberately separate from the secretsman verification
+steps for exactly this reason.
+
+**Current confirmed live state, as of this update:**
+```
+Helpers.php:        stock, md5 9a45421b387b733ad260e204308baa69
+Plugin tree:         absent (/usr/local/emhttp/plugins/unraid-secretsman does not exist)
+.plg on flash:        quarantined at /boot/config/plugins-error/unraid-secretsman.plg — NOT
+                       reinstalled yet. The .txz/.md5 are still staged at
+                       /boot/config/plugins/unraid-secretsman/ (untouched, still valid).
+                       Reinstall waits until the install-script bug is found and fixed.
+secretsman-smoketest: fully removed, no residue
+RAM-DISK-Dockerlog:    fully removed (package, plugin tree, flash .plg, rc.docker patches,
+                       monitor.php include — all gone; verified)
+/var/lib/docker/containers: still live tmpfs (untouched), real underlying btrfs directory
+                       freshened with current data for all 40 running/present containers
+Docker log rotation:  active (max-size=10m, max-file=2), independent of any plugin
+```
+
+---
+
+## RAM-DISK-Dockerlog removal — full detail
+
+**Why it mattered enough to remove:** the plugin kept `/var/lib/docker/containers` on tmpfs,
+committing to real (btrfs) storage only via a clean-shutdown sync (skipped on this unclean
+reboot) and a periodic sync found to be ~6 hours stale — and separately, buggy: the interval
+check `(date("i") * date("H") * 60 + date("i")) % $sync_interval_minutes` collapses to firing
+only at the top of each hour regardless of the configured interval (at `minute=0` the whole
+product is `0`, and `0 % anything` is always `0`). For the 60-minute default configured here
+that's coincidentally close to intended, but it's still a real bug, and doesn't explain the
+observed 6-hour gap on its own — `/var/log` is tmpfs and was wiped by the reboot, so the exact
+history from the prior (78-day-uptime) session is unrecoverable. Independent of both bugs: even
+a perfectly-working periodic sync only bounds staleness to the interval — it can never protect
+against the final window before an unclean shutdown, which is exactly what happened.
+
+**Why `plugin remove` alone wasn't enough:** the plugin's own `.plg` says outright —
+*"Please stop your array once to fully remove the modification"*. Its `event/stopped` hook (the
+actual `rc.docker` revert) only fires on an array stop; `plugin remove` just uninstalls the
+package. Stopping the array or the docker service is the hard constraint for this whole phase,
+so the plugin's own intended removal path wasn't available.
+
+**What was done instead, in order, all verified safe (docker never stopped, live tmpfs never
+touched):**
+1. `mount --bind /var/lib/docker /var/lib/docker_bind` — a plain (non-recursive) bind mount of
+   the *parent* doesn't carry the tmpfs submount with it, so this revealed the real underlying
+   btrfs directory underneath, still holding stale pre-incident data (confirmed: it still had
+   Unpackerr's old pre-force-update container ID; different `stat -f` filesystem ID from the
+   live tmpfs — genuinely two different mounts, not an alias).
+2. `rsync -aH --delete /var/lib/docker/containers/ /var/lib/docker_bind/containers` — the exact
+   technique the plugin's own periodic sync already used, so nothing new or unproven. Copied
+   live tmpfs content onto the real directory.
+3. **Verified before unmounting the bind helper:** every one of the 40 containers in
+   `docker ps -a` at that moment had a config directory on the real (bind-mounted) side; Radarr,
+   TimeMachine, and Unpackerr specifically had their **new** (post-recreation) container IDs
+   with readable `config.v2.json`, not the stale pre-incident ones; the stale pre-incident
+   Unpackerr ID was gone (rsync `--delete` pruned it correctly).
+4. `umount /var/lib/docker_bind` — clean, not lazy, no error.
+5. Backed up and edited `/etc/rc.d/rc.docker`: removed both sed-inserted blocks (`# move
+   json/logs to RAM-Disk` ... `logger -t docker RAM-Disk created`, and `# backup json/logs and
+   remove RAM-Disk` ... `logger -t docker RAM-Disk removed`) using the exact same `sed` range
+   markers the plugin's own `event/stopped` script uses. `diff` against the pre-edit backup
+   showed only those two blocks removed, nothing else; `bash -n` syntax-checked clean.
+6. Removed the `include_once('/tmp/RAM-DISK-Dockerlog/monitor');` line from
+   `/usr/local/emhttp/plugins/dynamix/scripts/monitor` — single-line diff, `php -l` clean.
+7. `removepkg RAM-DISK-Dockerlog-2026.04.22-x86_64-1`; removed
+   `/usr/local/emhttp/plugins/RAM-DISK-Dockerlog`, `/boot/config/plugins/RAM-DISK-Dockerlog/`,
+   `/boot/config/plugins/RAM-DISK-Dockerlog.plg`, `/var/log/plugins/RAM-DISK-Dockerlog.plg`,
+   `/tmp/RAM-DISK-Dockerlog/`. Confirmed: no `RAM-Disk`/`RAM-DISK` string survives anywhere in
+   `rc.docker` or `monitor`; nothing left on flash; package registry clean.
+
+**Deliberately NOT done:** the live tmpfs mount itself was left exactly as it was — still
+mounted, still backing the four currently-running-through-this-work containers checked
+(Radarr, TimeMachine, Unpackerr, Sonarr all still `Up`, undisturbed throughout). Swapping the
+mount live would need stopping docker. It doesn't need to happen live — the real underlying
+directory is already fresh, and nothing will ever recreate the tmpfs mount again, so the swap
+completes safely and automatically at whatever the next boot or docker restart turns out to be.
+
+**Docker's native log rotation was already active independently**, confirmed via
+`docker inspect Sonarr --format '{{json .HostConfig.LogConfig}}'` →
+`{"max-file":"2","max-size":"10m"}`, driven by `docker.cfg`'s `DOCKER_LOG_ROTATION="yes"` /
+`DOCKER_LOG_SIZE="10m"` / `DOCKER_LOG_FILES="2"` being turned into `--log-opt` flags by
+`rc.docker` at daemon start. Nothing needed configuring — the SSD-write concern the plugin was
+solving is already handled, with no durability trade.
+
+## Post-reboot check: RAM-DISK-Dockerlog removal (run this SEPARATELY from the secretsman checks below)
+
+Deliberately kept apart from "Verification commands" and "The smoketest itself" further down —
+this is a different change with a different failure mode, and conflating the two would make it
+harder to tell which of the two independent changes a problem belongs to.
+
+```sh
+# 1. containers/ must be a REAL directory now, not tmpfs
+stat -f /var/lib/docker/containers | grep -i type
+#   expect: Type: btrfs  (NOT tmpfs — if it still says tmpfs, something recreated the mount;
+#   check for any leftover RAM-DISK-Dockerlog trace first: grep -ri "ram-disk" /etc/rc.d/rc.docker)
+
+# 2. every container that was running/present before this reboot is still present after it,
+#    with a real config directory (this directly checks the exposure the whole removal was for)
+docker ps -a --format '{{.Names}}\t{{.Status}}'
+#   compare against the 40-container manifest from this session (Radarr, TimeMachine, Unpackerr
+#   included) — nothing should be missing or show RWLayer/inspect errors this time
+
+# 3. spot-check a couple of containers' config actually persisted correctly
+docker inspect Radarr --format '{{.State.Status}}'
+docker inspect Sonarr --format '{{.State.Status}}'
+#   expect clean output, no "RWLayer ... is unexpectedly nil" error
+
+# 4. confirm no RAM-DISK-Dockerlog trace anywhere (it should never come back)
+grep -ri "ram-disk" /etc/rc.d/rc.docker /usr/local/emhttp/plugins/dynamix/scripts/monitor
+ls /boot/config/plugins/ | grep -i ram-disk
+#   expect: nothing found for either
+```
+
+**If `containers/` still shows tmpfs after this reboot:** that means something recreated the
+mount — since the plugin and its `rc.docker` patches are confirmed removed, this would be
+unexpected and worth investigating fresh rather than assuming it's the same RAM-DISK-Dockerlog
+mechanism (it shouldn't be able to reappear at all now).
+
+**If a container is missing or shows an RWLayer-style error again:** this would NOT be the same
+root cause as before (the mechanism that caused it is gone) — treat it as a new, separate
+problem, not a recurrence.
+
+## Original brief (written before the first reboot — steps 3–5 evidence still valid)
 
 Written after steps 1–5 all passed on the live host, and after the plugin was genuinely
-installed (persistently, from locally-staged artifacts — no public release). **This is the
-handoff for you to reboot from, in a fresh session.** Read this fully before you reboot; it's
-written to be followable if things go sideways, not just as a changelog.
+installed (persistently, from locally-staged artifacts — no public release). Read this fully
+before you reboot; it's written to be followable if things go sideways, not just as a
+changelog.
 
-## Current live-system state, as of this writing
+## Current live-system state, as of this writing (STALE — see update above)
 
 - `/usr/local/emhttp/plugins/dynamix.docker.manager/include/Helpers.php` is **patched**.
   `md5 cdb8204eb82b489d24ecabf906f858ac` (stock was `9a45421b387b733ad260e204308baa69`,
@@ -356,11 +534,22 @@ a container and get an error mentioning "secretsman"):
   fail-closed design working as intended (bad token, missing store, wrong permissions). The
   error names the shape of the problem, never a value.
 
-## Not yet done — still deliberately deferred
+## Not yet done — current, as of the top UPDATE (supersedes the stale bullets this section used to have)
 
-- No public GitHub Release. Confirmed above: the download path in the `.plg` has never been
-  exercised. Cutting a real release is a separate, later, explicitly-confirmed action.
-- ~~No `!secretfile`-using container exists yet to prove repopulation timing~~ — addressed:
-  `secretsman-smoketest` now exists specifically for this. See "The reboot smoketest" above.
+- **Boot-time re-patch: UNPROVEN.** The plugin never installed on the first reboot (see UPDATE
+  at the top) — `Helpers.php` is stock right now. This still needs a second reboot attempt,
+  after the `.plg` install bug is found and fixed.
+- **`!secretfile` repopulation timing: UNPROVEN**, for the same reason — the resolver was never
+  in place for `disks_mounted` to call, and `secretsman-smoketest` (the container set up
+  specifically to test this) didn't survive the reboot at all, unrelated to secretsman (see
+  UPDATE). It's been removed along with its residue. **A future session will need to set up a
+  fresh `!secretfile` smoketest container again** before the next reboot, if timing still needs
+  proving then.
+- **The `.plg` install bug itself is not yet root-caused.** Next step: reproduce with stderr
+  actually captured (Unraid's installer only captures stdout), find the real failure, fix it,
+  get sign-off before touching the live `Helpers.php` again — same Gate 1 rule applies.
+- No public GitHub Release. The download path in the `.plg` has never been exercised. Cutting a
+  real release is a separate, later, explicitly-confirmed action.
 - Step 6 (verify per this brief) and step 7 (remove the plugin, second reboot, confirm clean
-  stock return) both wait for you, in fresh sessions, per the original task's Gate 2 structure.
+  stock return) both still wait for you, in fresh sessions, per the original task's Gate 2
+  structure — now with the `.plg` bug fixed and a fresh smoketest container as prerequisites.
