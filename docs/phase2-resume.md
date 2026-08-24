@@ -1,131 +1,269 @@
-# Phase 2 resume brief
+# Phase 2 resume brief — GATE 2
 
-Written at **GATE 1** — before any live change to the running Unraid host. Everything up to
-this point (patch layer, staging harness, all 48 real templates diffed) has run only against
-copies. This file is what a human needs to review, and later resume from, without re-deriving
-context.
+Written after steps 1–5 all passed on the live host, and after the plugin was genuinely
+installed (persistently, from locally-staged artifacts — no public release). **This is the
+handoff for you to reboot from, in a fresh session.** Read this fully before you reboot; it's
+written to be followable if things go sideways, not just as a changelog.
 
-## Where things stand right now
+## Current live-system state, as of this writing
 
-- **Nothing on the live host has been modified.** Every step so far — hash verification,
-  patched-copy generation, the full regression harness — ran against `/tmp` copies on the host
-  or in a local sandbox. `/usr/local/emhttp/plugins/dynamix.docker.manager/include/Helpers.php`
-  is untouched, stock, unpatched.
-- **Stock file's current hash** (re-verified live, 2026-08-25):
-  ```
-  9a45421b387b733ad260e204308baa69  /usr/local/emhttp/plugins/dynamix.docker.manager/include/Helpers.php
-  ```
-  This matches `reference/7.3.x/HASHES` in this repo exactly — no drift since the Phase 0
-  recon capture. If you re-run `md5sum` on that path before doing anything else and get a
-  **different** hash, STOP — something changed the file since this brief was written, and the
-  rest of this document's assumptions may no longer hold.
+- `/usr/local/emhttp/plugins/dynamix.docker.manager/include/Helpers.php` is **patched**.
+  `md5 cdb8204eb82b489d24ecabf906f858ac` (stock was `9a45421b387b733ad260e204308baa69`,
+  unchanged from Phase 0/Gate 1 — no drift). `php -l` clean.
+- The plugin is **installed for real**, via the actual `.plg` mechanism
+  (`/usr/local/sbin/plugin install`), not just manually staged:
+  - `/boot/config/plugins/unraid-secretsman.plg` — the installed `.plg`, persistent on flash.
+  - `/boot/config/plugins/unraid-secretsman/unraid-secretsman-2026.08.25.txz` and
+    `unraid-secretsman.md5` — the staged package, persistent on flash.
+  - `/usr/local/emhttp/plugins/unraid-secretsman/` — the unpacked tree (`src/`, `scripts/`,
+    `event/`, `reference/`), **not persistent** — this is what a reboot will re-derive from the
+    flash-staged `.plg`, which is exactly what Gate 2 is testing.
+  - `/var/log/plugins/unraid-secretsman.plg` — a symlink back to the flash `.plg`, meaning
+    Unraid's own plugin manager considers this a normal, successfully-installed plugin.
+- **This is a local-only install, not a public release.** The `.plg`'s `<FILE>` block for the
+  `.txz` still has a `<URL>` pointing at a GitHub Release that doesn't exist — but Unraid's
+  installer (`dynamix.plugin.manager/scripts/plugin`, the `"skipping: $name already exists"`
+  path) never reaches that URL because the target file is already present on flash with a
+  matching `<MD5>`. **The download path has never been exercised.** Don't assume it works until
+  a real release is cut and tried — that's a separate, later, explicitly-confirmed decision, not
+  something to infer from this install having succeeded.
+- No throwaway test artifacts remain: the Gate-1 live-verification container, its template, and
+  its store entry were all created and cleaned up during step 4/5 verification (see below) —
+  nothing was left behind. `/mnt/user/appdata/.secrets/` exists (0700, root), currently empty —
+  the real store location, ready for real use, holding nothing yet.
+- **Two bugs were found and fixed live**, before the real install succeeded — see "What went
+  wrong" below. Both are now covered by regression tests.
 
-## The exact change about to be made (step 3, pending your go-ahead)
+## What's been verified (steps 3–5, with evidence)
 
-A single `require_once` + one function call, inserted immediately before the line
-`  foreach ($xml['Config'] as $key => $config) {` in `Helpers.php` (line 508 in the stock
-7.3.1 copy), wrapped in marker comments:
-
-```php
-  // SECRETSMAN-PATCH-BEGIN v1 (github.com/kmbrimble/unraid-secretsman)
-  if (!is_file('/usr/local/emhttp/plugins/unraid-secretsman/src/secretsman.php')) {
-    throw new \RuntimeException('secretsman: resolver library missing at ' . '/usr/local/emhttp/plugins/unraid-secretsman/src/secretsman.php' . ' — reinstall the plugin or remove the patch');
-  }
-  require_once '/usr/local/emhttp/plugins/unraid-secretsman/src/secretsman.php';
-  secretsman_resolve($xml, $xml['Name']);
-  // SECRETSMAN-PATCH-END
+**Step 3 — applied to the live file.** Hash re-verified immediately before writing (still
+`9a45421b387b733ad260e204308baa69`, matching Gate 1's brief exactly — zero drift across the
+whole session). `secretsman_patch_apply_to_file()` wrote the patch; re-ran the full
+`tests/harness/regression.php` sweep against the **actual live file** afterward (not a copy):
+```
+byte-identical check: 48 templates checked, 48 identical, 0 mismatches, 0 errors, 0 token-bearing skipped
+token-bearing fixture check: PASS (no resolved value appears in $cmd)
 ```
 
-Nothing else in the file changes. This is applied via `secretsman_patch_apply_to_file()`
-(`src/patch.php`), which re-verifies the hash above immediately before writing, and only writes
-if it still matches — so even if you wait a while before saying go, the check runs again at the
-moment of the actual write, not just now.
+**Step 4 — a real throwaway container, through the real code path.** Built `secretsman-
+liveverify` (alpine, `sleep 3600`), with a `!secret` token in its one Variable field, a
+throwaway store entry with a random sentinel value. Rendered via a script that requires the
+**live patched** `dynamix.docker.manager/include/Helpers.php` exactly as `CreateDocker.php`
+does, then calls `xmlToCommand($templatePath, true)` — the identical function, identical file,
+identical `create_paths=true` real-creation mode the GUI uses; not a mock. (Went this route
+instead of scripting an authenticated browser session against the webGUI's CSRF-protected form
+— same code path either way, without needing to script real login credentials over HTTP.)
+- **Grepped `$cmd` for the sentinel programmatically: absent.** The rendered command was:
+  ```
+  docker create --name='secretsman-liveverify' --net='bridge' --pids-limit 8192 \
+    -e TZ="Australia/Brisbane" -e HOST_OS="Unraid" -e HOST_HOSTNAME="unRAID" \
+    -e HOST_CONTAINERNAME="secretsman-liveverify" -l net.unraid.docker.managed=dockerman \
+    --env-file=<redacted-path> 'alpine' sleep 3600
+  ```
+  No `-e THROWAWAY_SECRET=...` fragment — the env-file indirection worked exactly as designed.
+- Then actually created it via `execCommand($cmd, false)` — the same function
+  `CreateDocker.php` calls at its own line 226 for a real (non-dry-run) creation.
+- Started it, then **`docker exec secretsman-liveverify printenv THROWAWAY_SECRET`** — matched
+  the sentinel exactly. The container genuinely received the value; "clean command" and
+  "app gets its secret" are separate properties, and both held.
+- Confirmed `docker inspect` **does** show the value in `Config.Env` — expected, matches the
+  documented SECURITY caveat in README.md, not a bug.
+- Cleaned up: container stopped+removed, template deleted, store entry deleted, `/run/
+  secretsman/` deleted.
 
-### The exact command to undo this specific change
+**Step 5 — force-updated a real, already-running, unrelated container.** Picked **Unpackerr**
+(a background extraction-automation utility with no DNS/proxy/user-facing duty — you said
+"relaxed about breaking for ten minutes," this is about as low-stakes as the stack gets). Ran
+the actual `scripts/update_container` script — **this is confirmed call site #5**, the exact
+path `unraid-api`'s `updateContainer` GraphQL mutation shells out to (see Phase 0 recon) — via
+`php update_container "Unpackerr"`, unmodified, with the live patched `Helpers.php` in effect.
+- Container ID changed (`e1b193a7...` → `f5189fd0...`) confirming a genuine stop+remove+recreate,
+  not a no-op.
+- Same env var count before/after (22), fresh `docker logs` showing clean startup and successful
+  reconnection to Sonarr/Radarr. No regression.
 
-Two ways, in order of preference:
+## Native fail-closed behaviour — read this before you go looking for a "blocking" feature
 
-**1. The uninstall script** (once the plugin is actually installed at
-`/usr/local/emhttp/plugins/unraid-secretsman/`):
+**secretsman does not implement its own "hold back a container" mechanism, on purpose.**
+Unraid's own `/etc/rc.d/rc.docker`, in its autostart loop, already calls `container_paths_exist()`
+before every `docker start` — which runs `docker inspect --format='{{range .Mounts}}{{.Source}}|
+{{end}}'` and refuses to start (leaving the container simply stopped) if any bind-mount source
+is missing. Since a `!secretfile` entry is registered as an ordinary `Path`-type Config entry,
+this native check already covers our case for free. **It also logs it itself** — you'll find a
+line like:
+```
+container "NAME" hostpath "/run/secretsman/files/NAME/key" does not exist
+```
+in the system log (`log` function output, same place all of rc.docker's own logging goes) —
+**that's Unraid's own message, not a secretsman feature.** `scripts/repopulate.php`'s only job
+is to win the race (guaranteed by the `disks_mounted` hook timing — see CLAUDE.md "Array-start
+hook") and raise a clearer, secretsman-specific notification on top (naming the container and
+the missing `ns/key`, not just an opaque tmpfs path) — not to implement the holding-back itself.
+If a container doesn't come back after reboot and you go looking for "why did secretsman block
+this," check the syslog line above and `RECOVERY.md`'s force-start section, not a secretsman
+config file — there isn't one for this.
+
+## What went wrong (both fixed, both now regression-tested)
+
+Two bugs surfaced only when the `.plg` was actually installed for real — neither was, or could
+have been, caught by the harness, since the harness never exercises `.plg` XML itself:
+
+1. **A literal `<name>` inside a plain-English comment inside an `<INLINE>` bash block** (the
+   comment was explaining the emhttp_event dispatch convention) was parsed by libxml as an
+   unclosed XML tag, silently corrupting the rest of the document. Unraid's installer reported
+   only an opaque `"XML file doesn't exist or xml parse error"` with no line number — reproduced
+   locally with `simplexml_load_file()` + `libxml_get_errors()`, which does give a line number.
+   Fixed by rewording the comment to avoid literal angle brackets (CDATA isn't an option here —
+   it would stop `&entity;` substitution, which the whole `.plg` templating convention depends
+   on).
+2. **`<Inline>` (wrong case) instead of `<INLINE>`** for the `.md5` file's content-writing block.
+   The installer's SimpleXML property access (`$file->INLINE`) is case-sensitive; the wrong-case
+   element parsed as valid XML but was silently never read, so the `.md5` file was never
+   written, and the install script's own `cat &plgPATH;/&name;.md5` failed with "No such file."
+3. Both are now covered by two new tests in `tests/run.php` ("unraid-secretsman.plg is
+   well-formed XML" and the INLINE-case check) so this class of bug can't silently reappear.
+
+**Takeaway for future changes to the `.plg`:** always validate with
+`simplexml_load_file() + libxml_get_errors()` (or just `php tests/run.php`) before staging it
+anywhere, and prefer running an actual local install (as done here) over trusting that "the XML
+looks right" — Unraid's installer's own error reporting for a malformed `.plg` is not helpful
+enough to debug from alone.
+
+## Exact commands to undo, right now, without a reboot
+
+Same as Gate 1's brief, still accurate — `secretsman_patch_revert()` round-trips to
+byte-identical stock (tested), and the standard `.plg` remove flow now also actually works
+(verified installed, not just written):
 ```sh
+# Preferred — cleanly reverts Helpers.php AND removes the plugin via the standard mechanism:
+/usr/local/sbin/plugin remove /boot/config/plugins/unraid-secretsman.plg
+# (runs plugin/scripts/uninstall.php via the .plg's Method="remove" block, then removes
+#  /usr/local/emhttp/plugins/unraid-secretsman and /boot/config/plugins/unraid-secretsman)
+
+# Or just the patch, leaving the plugin files in place:
 php /usr/local/emhttp/plugins/unraid-secretsman/scripts/uninstall.php
 ```
-Strips exactly the marker-delimited block above and nothing else — verified by
-`secretsman_patch_revert()` round-tripping to byte-identical stock in
-`tests/run.php` ("secretsman_patch_revert() round-trips the real reference/7.3.x/Helpers.php").
 
-**2. Manual, if that script isn't available for any reason** — delete the three lines between
-(and including) `// SECRETSMAN-PATCH-BEGIN` and `// SECRETSMAN-PATCH-END`, or just restore from
-the reference copy:
+## What the reboot is expected to prove
+
+Three things, in this order:
+
+1. **The patch re-applies at boot.** `rc.local` reinstalls every `.plg` in
+   `/boot/config/plugins/*.plg` on every boot (see CLAUDE.md "Boot-time patch pattern") — this
+   runs our `.plg`'s install block again, which re-runs `apply_patch.php`. Since the file will
+   already be patched (unless something restored the stock image, which reboots don't do to
+   `/boot`), the expected outcome is `"secretsman: Helpers.php already patched, no-op"` — same
+   idempotent behaviour already verified live, now proven to actually fire from `rc.local`
+   rather than from me running it by hand.
+2. **`!secretfile` sources repopulate before docker autostart** — though as of this writing
+   there are **no real containers configured with a `!secretfile` token** (the throwaway from
+   step 4 was cleaned up), so this specific claim has **no live container to prove it against
+   yet**. What the reboot *can* still confirm: `event/disks_mounted` actually fires (check the
+   log line below) and exits cleanly with nothing to do. Proving actual repopulation timing
+   needs a real `!secretfile`-using container configured first — a good next step after this
+   reboot, in a later session, not part of this one.
+3. **Containers come up.** Ordinary autostart, unaffected by any of this — Unpackerr and every
+   other autostart container should return exactly as they would without this plugin installed,
+   since the patch is a no-op for every token-free template (proven repeatedly above).
+
+## Verification commands, in order, after the reboot
+
+Run these over SSH once the box is back up. Each is read-only except where noted.
+
 ```sh
-cp /path/to/this/repo/reference/7.3.x/Helpers.php /usr/local/emhttp/plugins/dynamix.docker.manager/include/Helpers.php
+# 1. Patch survived / re-applied correctly
+md5sum /usr/local/emhttp/plugins/dynamix.docker.manager/include/Helpers.php
+#   expect: cdb8204eb82b489d24ecabf906f858ac
+grep -c SECRETSMAN-PATCH-BEGIN /usr/local/emhttp/plugins/dynamix.docker.manager/include/Helpers.php
+#   expect: 1
+php -l /usr/local/emhttp/plugins/dynamix.docker.manager/include/Helpers.php
+#   expect: No syntax errors detected
+
+# 2. The plugin tree came back (it does NOT persist on its own — this proves rc.local
+#    actually re-ran the install, not that emhttp happened to survive)
+ls /usr/local/emhttp/plugins/unraid-secretsman/
+find /usr/local/emhttp/plugins/unraid-secretsman -type f | wc -l
+#   expect: 10 (same file count as the pre-reboot tree)
+
+# 3. Evidence the install script actually ran this boot (not stale from before)
+#    — check dmesg/syslog for the "secretsman:" lines rc.local's plugin install produces,
+#    with a timestamp AFTER the reboot:
+grep secretsman /var/log/syslog | tail -20
+#   expect to see "secretsman: Helpers.php already patched, no-op" and
+#   "secretsman: install complete" with post-reboot timestamps
+
+# 4. disks_mounted fired
+grep -i "disks_mounted\|secretsman" /var/log/syslog | tail -30
+#   there's no repopulate.php-specific log line when there's nothing to repopulate (see
+#   "no live container to prove it against yet" above) — absence of an error here is the
+#   signal, not a specific success line. If you see a secretsman notification in the GUI
+#   (bell icon) about a held-back container or a store problem, investigate before trusting
+#   anything else in this list.
+
+# 5. Ordinary containers are fine
+docker ps --format '{{.Names}}\t{{.Status}}'
+#   compare against your normal expectation — nothing here should look different from any
+#   other reboot. Unpackerr in particular (touched in step 5) should be Up.
+
+# 6. The plugin is still registered normally
+ls -la /var/log/plugins/ | grep secretsman
+#   expect: symlink to /boot/config/plugins/unraid-secretsman.plg, same as any other plugin
 ```
-(only safe if the host is still on Unraid 7.3.x — check `cat /etc/unraid-version` first).
 
-**3. The universal fallback, if neither of the above works or the webGUI is unusable:** a
-reboot alone restores `Helpers.php` from the OS image regardless of any of this, since
-`/usr/local/emhttp` is never persisted. See "The `.plg`'s location and the reboot recovery"
-below and the full drill in `RECOVERY.md`.
+## If the reboot goes badly
 
-## The .plg's location on flash and the one-line removal + reboot recovery
+Written assuming you're stressed and something's down. Work top to bottom; stop as soon as
+you're back to a working state — you don't need to run every remaining check.
 
-Once installed, the plugin lives at:
-```
-/boot/config/plugins/unraid-secretsman.plg          <- the .plg descriptor itself
-/boot/config/plugins/unraid-secretsman/              <- (if any config/state ends up here)
-/usr/local/emhttp/plugins/unraid-secretsman/          <- the installed tree (not persistent)
-```
+**If the webGUI doesn't come back at all:**
+This is very unlikely to be caused by this plugin — the patch only affects `xmlToCommand()`,
+which nothing calls during boot itself (only at container create/update time), and the `.plg`'s
+install block has no early-boot dependency (see CLAUDE.md "rc.local's patch step has zero
+dependency on the array"). But if it doesn't:
+1. Wait a genuinely full boot cycle (a few minutes) — Unraid's first boot after installing a new
+   plugin can be slower than usual as things get re-verified.
+2. If still nothing: this is the scenario `RECOVERY.md` § "If the webGUI is unusable" is written
+   for — pull the flash drive into another machine, delete `/boot/config/plugins/
+   unraid-secretsman.plg` (and optionally the `unraid-secretsman/` directory next to it),
+   reboot again. `Helpers.php` comes back stock from the OS image regardless, since
+   `/usr/local/emhttp` is never persisted — this isn't a "hope it works" step, it's mechanically
+   guaranteed by how Unraid boots.
 
-**One-line removal + reboot recovery** (this is the drill already proven working — see
-"Recovery drill: DONE" in the Phase 2 task and `RECOVERY.md`):
-```sh
-rm /boot/config/plugins/unraid-secretsman.plg
-reboot
-```
-`/etc/rc.d/rc.local` only reinstalls `.plg`s it finds in `/boot/config/plugins/*.plg` at boot —
-remove the file, and nothing re-patches `Helpers.php` on the next boot. Full stress-tested
-version (including the "webGUI is unusable, pull the flash drive" path) is in `RECOVERY.md`.
+**If the webGUI comes back but containers don't start:**
+1. Check `docker ps -a` — are they `Created`/`Exited` rather than `Up`? That's very likely
+   ordinary Unraid behaviour unrelated to this plugin (autostart order, dependent services not
+   ready yet) — compare against what you'd expect on any normal reboot before assuming this
+   plugin caused it.
+2. Check the live hash (command 1 above). If it does **not** match `cdb8204eb82b489d24ecabf906f858ac`
+   and does not match the stock `9a45421b387b733ad260e204308baa69` either, something unexpected
+   changed the file — stop here, don't reinstall or patch again, and investigate what wrote to
+   it before doing anything further.
+3. If the hash is right but something still seems off, remove the plugin
+   (`/usr/local/sbin/plugin remove /boot/config/plugins/unraid-secretsman.plg`, no reboot
+   needed — this reverts `Helpers.php` immediately) and see if the problem persists. If it does,
+   it wasn't this plugin.
 
-## What's been verified so far (evidence for your review)
+**If container creation/update itself errors after the reboot** (i.e., you try to add or update
+a container and get an error mentioning "secretsman"):
+- `"resolver library missing at ..."` — the plugin directory didn't come back
+  (`/usr/local/emhttp/plugins/unraid-secretsman/src/secretsman.php` missing). Re-run
+  `/usr/local/sbin/plugin install /boot/config/plugins/unraid-secretsman.plg` by hand; if that
+  also fails, remove the plugin (see above) to get back to a working, unpatched state, and
+  investigate from there.
+- Any other `secretsman:` error on a template with **no `!secret`/`!secretfile` token in it** —
+  this should be impossible given the byte-identical regression evidence above, and would be a
+  real bug. Save the exact error text (it will not contain a secret value, by design — safe to
+  paste anywhere) and stop; don't keep retrying.
+- A `secretsman:` error on a template that legitimately uses a token — that's very likely the
+  fail-closed design working as intended (bad token, missing store, wrong permissions). The
+  error names the shape of the problem, never a value.
 
-1. **Full unit suite: 81/81 passing** (`php tests/run.php`) — token parsing, store validation,
-   field-scope enforcement, materialisation, the patch layer (apply/verify/revert/idempotency,
-   including a real string-escaping bug the tests caught before it ever reached a file), and the
-   new plugin-script helpers (template token scanning, autostart-list parsing, version/hash
-   detection).
-2. **The regression that matters, run on the live host, read-only, against every real
-   template:**
-   ```
-   byte-identical check: 48 templates checked, 48 identical, 0 mismatches, 0 errors, 0 token-bearing skipped
-   token-bearing fixture check: PASS (no resolved value appears in $cmd)
-   ```
-   Every one of your 48 real, token-free templates produces **byte-for-byte identical** output
-   from stock vs. patched `Helpers.php`. The committed fixture template
-   (`tests/harness/fixtures/token-bearing.xml`, synthetic, throwaway sentinel values) resolves
-   through the patched copy with `--env-file=` in the output and neither sentinel value
-   anywhere in it.
-3. **`php -l` clean** on the patched copy under the host's real PHP 8.4.21.
-4. **Live hash re-verified** immediately before this brief was written (see above) — no drift.
+## Not yet done — still deliberately deferred
 
-## What step 3 will actually do, concretely
-
-Running `secretsman_patch_apply_to_file()` against the real path will:
-1. Re-read and re-hash the live file.
-2. Confirm it still matches `9a45421b387b733ad260e204308baa69`. If not, it aborts and raises an
-   Unraid notification — it will not guess or force anything.
-3. Write the patched contents to a temp file, preserve the original's permissions, and
-   atomically rename over the live file.
-
-No container is created or restarted by this step. It only changes what a *future* container
-creation/update will do.
-
-## Not yet done — deliberately deferred, not forgotten
-
-- **No GitHub Release has been cut.** `unraid-secretsman.plg` and `scripts/build-plugin.sh`
-  exist and the packaging step has been dry-run successfully, but publishing an installable
-  `.txz` before this patch has been proven safe on a real host (steps 3–5 below, plus the
-  reboot in Gate 2) would let someone install something not yet verified end-to-end. This is
-  built to be releasable quickly once Gate 2 clears, not to be released now.
-- Steps 4–5 (create a throwaway test container, force-update an existing unrelated container)
-  happen after your go-ahead on this gate, in the same session.
-- Gate 2 (the reboot) is a separate stop, later, performed by you, not this session.
+- No public GitHub Release. Confirmed above: the download path in the `.plg` has never been
+  exercised. Cutting a real release is a separate, later, explicitly-confirmed action.
+- No `!secretfile`-using container exists yet to prove repopulation timing against a real
+  autostart entry — worth setting up in a follow-up session once this reboot's basic result is
+  in hand.
+- Step 6 (verify per this brief) and step 7 (remove the plugin, second reboot, confirm clean
+  stock return) both wait for you, in fresh sessions, per the original task's Gate 2 structure.

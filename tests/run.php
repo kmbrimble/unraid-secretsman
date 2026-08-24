@@ -696,6 +696,38 @@ t('patch: the real reference/7.3.x/Helpers.php, patched, still lints clean under
     assert_eq(0, $code, 'patched real Helpers.php must lint clean: ' . implode("\n", $out));
 });
 
+t('plg: unraid-secretsman.plg is well-formed XML', function () {
+    // Caught a real bug live on Gate 1: a bash comment inside an <INLINE>
+    // block containing a literal "<name>" (no CDATA is possible here,
+    // since CDATA would stop &entity; substitution the .plg depends on)
+    // silently corrupted the document structure past that point, and
+    // Unraid's installer only reports this as an opaque "XML file doesn't
+    // exist or xml parse error" with no line number. Cheap to catch here.
+    libxml_use_internal_errors(true);
+    $xml = simplexml_load_file(__DIR__ . '/../unraid-secretsman.plg');
+    $errors = libxml_get_errors();
+    libxml_clear_errors();
+    assert_true($xml !== false, 'unraid-secretsman.plg must be valid XML: ' .
+        implode('; ', array_map(fn($e) => "line {$e->line}: " . trim($e->message), $errors)));
+});
+
+t('plg: FILE elements use the installer\'s actual property names (INLINE, not Inline)', function () {
+    // dynamix.plugin.manager/scripts/plugin reads $file->INLINE (all caps)
+    // for both content-writing FILE blocks and Run="..." script blocks —
+    // a wrong-case element name parses as valid XML but silently does
+    // nothing at install time (e.g. cat: file not found). Caught live on
+    // Gate 1: <Inline> for the .md5 FILE block was silently ignored.
+    $xml = simplexml_load_file(__DIR__ . '/../unraid-secretsman.plg');
+    foreach ($xml->FILE as $i => $file) {
+        $children = [];
+        foreach ($file->children() as $child) {
+            $children[] = $child->getName();
+        }
+        $hasWrongCase = array_filter($children, fn($name) => strcasecmp($name, 'INLINE') === 0 && $name !== 'INLINE');
+        assert_true(!$hasWrongCase, "FILE[$i] has a wrong-case INLINE-like element: " . implode(',', $hasWrongCase));
+    }
+});
+
 // ---------------------------------------------------------------------------
 // Plugin scripts (plugin/scripts/) — Phase 2
 // ---------------------------------------------------------------------------
