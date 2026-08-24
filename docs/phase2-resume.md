@@ -27,10 +27,13 @@ written to be followable if things go sideways, not just as a changelog.
   matching `<MD5>`. **The download path has never been exercised.** Don't assume it works until
   a real release is cut and tried — that's a separate, later, explicitly-confirmed decision, not
   something to infer from this install having succeeded.
-- No throwaway test artifacts remain: the Gate-1 live-verification container, its template, and
-  its store entry were all created and cleaned up during step 4/5 verification (see below) —
-  nothing was left behind. `/mnt/user/appdata/.secrets/` exists (0700, root), currently empty —
-  the real store location, ready for real use, holding nothing yet.
+- The Gate-1 live-verification container (`secretsman-liveverify`), its template, and its store
+  entry were all created and cleaned up during step 4/5 verification — nothing from that round
+  was left behind.
+- **A second, new throwaway container exists specifically for this reboot:
+  `secretsman-smoketest`.** See "The reboot smoketest" below — this is what makes repopulation
+  timing provable this time, and it (plus its store entry) is disposable, to be removed in
+  step 7.
 - **Two bugs were found and fixed live**, before the real install succeeded — see "What went
   wrong" below. Both are now covered by regression tests.
 
@@ -81,6 +84,54 @@ path `unraid-api`'s `updateContainer` GraphQL mutation shells out to (see Phase 
   not a no-op.
 - Same env var count before/after (22), fresh `docker logs` showing clean startup and successful
   reconnection to Sonarr/Radarr. No regression.
+
+## The reboot smoketest — `secretsman-smoketest` (set up specifically so this reboot proves repopulation timing)
+
+Repopulation timing was unproven after step 5 because no autostart container used
+`!secretfile`. Rather than let this reboot only re-confirm the patch re-applies, a disposable
+`!secretfile` container was set up and verified working **before** the reboot, autostart
+enabled, specifically so the reboot exercises the full `disks_mounted` → repopulate →
+`container_paths_exist` → `docker start` chain for real.
+
+**What was created, all through the real code path (same as step 4 — `xmlToCommand()` +
+`execCommand()`, not a hand-rolled `docker run`):**
+
+- **Store entry** (an explicit, deliberate exception to "don't write to the store location" —
+  needed for this test): `/mnt/user/appdata/.secrets/store.json`, written via a tmp-file +
+  `chmod 0600` + `rename` atomic sequence, preserving the 0600/root requirement
+  `secretsman_load_store()` enforces:
+  ```json
+  { "secretsman-smoketest": { "throwaway-key": "smoketest-value-not-a-real-secret" } }
+  ```
+- **Template**, saved for real at
+  `/boot/config/plugins/dockerMan/templates-user/my-secretsman-smoketest.xml`: `alpine`,
+  `sleep 3600`, one Variable field holding `!secretfile secretsman-smoketest/throwaway-key`.
+- **Container**, created via the live patched `xmlToCommand()` exactly as in step 4. Rendered
+  command confirmed the sentinel absent and the expected shape present:
+  ```
+  ... -e 'THROWAWAY_TOKEN_FILE'='/run/secrets/throwaway-key' ...
+  -v '/run/secretsman/files/secretsman-smoketest/throwaway-key':'/run/secrets/throwaway-key':'ro' ...
+  ```
+- **Autostart enabled** — appended `secretsman-smoketest` to `/var/lib/docker/unraid-autostart`
+  (the plain list `rc.docker`'s autostart loop reads), after backing up the original to
+  `/var/lib/docker/unraid-autostart.pre-smoketest.bak`. This is the part that makes the race
+  real: without it, the container would only start after you're already logged in, well after
+  any window where `disks_mounted` timing could matter.
+
+**Verified before the reboot** (all passed):
+- Bind-mount source materialised at `/run/secretsman/files/secretsman-smoketest/throwaway-key`,
+  mode `0400`.
+- Container started successfully.
+- `docker exec secretsman-smoketest cat /run/secrets/throwaway-key` → exact match:
+  `smoketest-value-not-a-real-secret`.
+
+**This container and its store entry are DISPOSABLE.** Step 7 cleanup must remove, in addition
+to the plugin itself: the container (`docker rm -f secretsman-smoketest`), its template
+(`/boot/config/plugins/dockerMan/templates-user/my-secretsman-smoketest.xml`), its store entry
+(either delete `/mnt/user/appdata/.secrets/store.json` entirely if nothing else has since used
+it, or edit out just the `secretsman-smoketest` key), its
+`/run/secretsman/files/secretsman-smoketest/` remnant, its `unraid-autostart` entry, and the
+`.bak` file once you've confirmed the current autostart list is otherwise correct.
 
 ## Native fail-closed behaviour — read this before you go looking for a "blocking" feature
 
@@ -155,13 +206,12 @@ Three things, in this order:
    `/boot`), the expected outcome is `"secretsman: Helpers.php already patched, no-op"` — same
    idempotent behaviour already verified live, now proven to actually fire from `rc.local`
    rather than from me running it by hand.
-2. **`!secretfile` sources repopulate before docker autostart** — though as of this writing
-   there are **no real containers configured with a `!secretfile` token** (the throwaway from
-   step 4 was cleaned up), so this specific claim has **no live container to prove it against
-   yet**. What the reboot *can* still confirm: `event/disks_mounted` actually fires (check the
-   log line below) and exits cleanly with nothing to do. Proving actual repopulation timing
-   needs a real `!secretfile`-using container configured first — a good next step after this
-   reboot, in a later session, not part of this one.
+2. **`!secretfile` sources repopulate before docker autostart.** This is now genuinely testable:
+   `secretsman-smoketest` (see "The reboot smoketest" above) is a real autostart container whose
+   bind-mount source lives on tmpfs and will be gone the moment the box comes back up, exactly
+   like every other `!secretfile` container will be after every future reboot. Whether it comes
+   back correctly is the actual, direct test of the `disks_mounted` ordering guarantee argued in
+   CLAUDE.md — not just a re-confirmation of the patch re-applying.
 3. **Containers come up.** Ordinary autostart, unaffected by any of this — Unpackerr and every
    other autostart container should return exactly as they would without this plugin installed,
    since the patch is a no-op for every token-free template (proven repeatedly above).
@@ -194,11 +244,11 @@ grep secretsman /var/log/syslog | tail -20
 
 # 4. disks_mounted fired
 grep -i "disks_mounted\|secretsman" /var/log/syslog | tail -30
-#   there's no repopulate.php-specific log line when there's nothing to repopulate (see
-#   "no live container to prove it against yet" above) — absence of an error here is the
-#   signal, not a specific success line. If you see a secretsman notification in the GUI
-#   (bell icon) about a held-back container or a store problem, investigate before trusting
-#   anything else in this list.
+#   repopulate.php itself only logs (via notify) on a FAILURE — a clean repopulation of
+#   secretsman-smoketest produces no log line of its own, only the file existing (see
+#   step 7 below, which is the actual evidence). If you see a secretsman notification in the
+#   GUI (bell icon) about a held-back container or a store problem, investigate before
+#   trusting anything else in this list.
 
 # 5. Ordinary containers are fine
 docker ps --format '{{.Names}}\t{{.Status}}'
@@ -209,6 +259,54 @@ docker ps --format '{{.Names}}\t{{.Status}}'
 ls -la /var/log/plugins/ | grep secretsman
 #   expect: symlink to /boot/config/plugins/unraid-secretsman.plg, same as any other plugin
 ```
+
+### 7. The smoketest itself — the part that actually proves repopulation timing
+
+Run these in this exact order; each depends on the previous one having the expected result.
+
+```sh
+# 7a. Did it autostart at all?
+docker ps -a --filter name=secretsman-smoketest --format '{{.Names}} {{.Status}}'
+#   expect: Up ...
+
+# 7b. Was the bind-mount source repopulated BEFORE docker tried to start it? (this is the
+#     actual disks_mounted-vs-docker_started ordering claim, made concrete)
+ls -la /run/secretsman/files/secretsman-smoketest/throwaway-key
+#   expect: exists, mode 0400 — same as the pre-reboot state
+
+# 7c. Does the container's own view of the file match exactly?
+docker exec secretsman-smoketest cat /run/secrets/throwaway-key
+#   expect: smoketest-value-not-a-real-secret   (byte-for-byte)
+```
+
+**What each failure mode here means — they are NOT equally bad:**
+
+- **Container shows `Created` (not `Up`), and 7b's file does not exist:** repopulation lost the
+  race or failed outright, and Unraid's own `container_paths_exist()` correctly refused to start
+  it — see "Native fail-closed behaviour" above. **This is the safe failure.** Check
+  `grep secretsman /var/log/syslog` for a "held back" notification naming the container and key,
+  and cross-reference with `RECOVERY.md`'s force-start override. It means the ordering guarantee
+  didn't hold on this particular boot (worth understanding why — see below) — but nothing wrong
+  was ever exposed to the container.
+- **Container is `Up`, but 7b's file is missing, or 7c returns empty/wrong content:** this is
+  **worse and worth stopping on.** It would mean something got bind-mounted at
+  `/run/secrets/throwaway-key` other than the intended secret file — possibly an empty directory
+  Docker auto-vivified, which is exactly the fail-closed violation this whole design exists to
+  prevent. If you see this, do not treat it as a minor glitch: capture `docker inspect
+  secretsman-smoketest --format '{{json .Mounts}}'` and stop — this needs investigation before
+  trusting the plugin with anything real, not a retry.
+- **Container is `Up` and 7b/7c both pass:** the ordering guarantee held. This is the expected,
+  hoped-for outcome.
+
+Note this is a **blocking, not probabilistic, guarantee** by design (see CLAUDE.md "Array-start
+hook" — `emhttpd` blocks on `disks_mounted` until it completes, strictly before `rc.docker start`
+is ever invoked). A held-back result on this first reboot should NOT be read as "the race went
+the wrong way this time, try again" — if the guarantee holds as designed, repopulation either
+runs to completion before autostart, every time, or it doesn't run at all for some other reason
+(store not readable yet, a path problem, `disks_mounted` not firing). If 7a shows held-back,
+check `grep secretsman /var/log/syslog` and `grep disks_mounted /var/log/syslog` for what
+actually happened before assuming it's a timing fluke — a genuine ordering failure here would be
+a real bug in the design argument, worth reporting precisely, not smoothing over with a retry.
 
 ## If the reboot goes badly
 
@@ -262,8 +360,7 @@ a container and get an error mentioning "secretsman"):
 
 - No public GitHub Release. Confirmed above: the download path in the `.plg` has never been
   exercised. Cutting a real release is a separate, later, explicitly-confirmed action.
-- No `!secretfile`-using container exists yet to prove repopulation timing against a real
-  autostart entry — worth setting up in a follow-up session once this reboot's basic result is
-  in hand.
+- ~~No `!secretfile`-using container exists yet to prove repopulation timing~~ — addressed:
+  `secretsman-smoketest` now exists specifically for this. See "The reboot smoketest" above.
 - Step 6 (verify per this brief) and step 7 (remove the plugin, second reboot, confirm clean
   stock return) both wait for you, in fresh sessions, per the original task's Gate 2 structure.
