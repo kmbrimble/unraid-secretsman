@@ -170,6 +170,19 @@ function secretsman_sweep_env_dir(string $envDir, int $maxAgeSeconds = 300): voi
 }
 
 /**
+ * The filesystem-safe form of a container name used for every runtime
+ * path under $runtime_root. Exposed (not inlined) because the boot-time
+ * !secretfile repopulation script (scripts/repopulate.php) has to compute
+ * the exact same host path independently, from a container's saved
+ * template, before secretsman_resolve() ever runs again for it.
+ */
+function secretsman_safe_name(string $containerName): string
+{
+    $safe = preg_replace('/[^A-Za-z0-9_.-]/', '_', $containerName);
+    return $safe !== '' ? $safe : 'container';
+}
+
+/**
  * Resolve every !secret / !secretfile token in $xml['Config'], mutating
  * $xml in place. Tokens are only permitted in Variable-type fields; a
  * token anywhere else (Path, Port, Label, Device) aborts, naming the
@@ -177,15 +190,21 @@ function secretsman_sweep_env_dir(string $envDir, int $maxAgeSeconds = 300): voi
  * entries) also aborts explicitly, since those are echoed into $cmd raw.
  *
  * $opts:
- *   store_path    default '/mnt/user/appdata/.secrets/store.json'
- *   runtime_root  default '/run/secretsman'
+ *   store_path    default '/mnt/user/appdata/.secrets/store.json', overridable
+ *                 by the SECRETSMAN_STORE_PATH env var when $opts doesn't set it
+ *   runtime_root  default '/run/secretsman', overridable by SECRETSMAN_RUNTIME_ROOT
+ *
+ * The env-var fallback exists solely so the Phase 2 staging harness
+ * (tests/harness/) can exercise the exact production code path — the real
+ * shipped patch calls secretsman_resolve($xml, $xml['Name']) with no
+ * $opts at all — against a throwaway fixture store instead of the real
+ * one, without touching /mnt/user/appdata. The .plg never sets these.
  */
 function secretsman_resolve(array &$xml, string $containerName, array $opts = []): void
 {
-    $storePath   = $opts['store_path']   ?? '/mnt/user/appdata/.secrets/store.json';
-    $runtimeRoot = $opts['runtime_root'] ?? '/run/secretsman';
-    $safeName    = preg_replace('/[^A-Za-z0-9_.-]/', '_', $containerName);
-    $safeName    = $safeName !== '' ? $safeName : 'container';
+    $storePath   = $opts['store_path']   ?? (getenv('SECRETSMAN_STORE_PATH') ?: '/mnt/user/appdata/.secrets/store.json');
+    $runtimeRoot = $opts['runtime_root'] ?? (getenv('SECRETSMAN_RUNTIME_ROOT') ?: '/run/secretsman');
+    $safeName    = secretsman_safe_name($containerName);
 
     $envDir  = $runtimeRoot . '/env';
     $fileDir = $runtimeRoot . '/files/' . $safeName;

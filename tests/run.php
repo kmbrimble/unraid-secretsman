@@ -5,6 +5,12 @@ declare(strict_types=1);
 // identical locally and in CI.
 
 require __DIR__ . '/../src/secretsman.php';
+require __DIR__ . '/../src/patch.php';
+require __DIR__ . '/../plugin/scripts/common.php';
+require __DIR__ . '/../plugin/scripts/apply_patch.php';
+require __DIR__ . '/../plugin/scripts/repopulate.php';
+require __DIR__ . '/../plugin/scripts/force_start.php';
+require __DIR__ . '/../plugin/scripts/uninstall.php';
 
 $failures = [];
 $passed   = 0;
@@ -481,6 +487,42 @@ t('resolve: template with no tokens is left untouched', function () {
     assert_eq($before, $xml);
 });
 
+t('resolve: SECRETSMAN_STORE_PATH env var is used only when opts omits store_path', function () {
+    $dir = scratch_dir();
+    $storePath = write_store($dir, ['ns' => ['k' => 'from-env-override']]);
+    putenv("SECRETSMAN_STORE_PATH={$storePath}");
+    putenv("SECRETSMAN_RUNTIME_ROOT={$dir}/run");
+    try {
+        $xml = ['Config' => [variable_config('V', '!secret ns/k')], 'ExtraParams' => ''];
+        secretsman_resolve($xml, 'ctr'); // no $opts at all — the real shipped call shape
+        $envFile = glob($dir . '/run/env/*.env')[0] ?? null;
+        assert_true($envFile !== null, 'env file should have been written under the env-var runtime root');
+        assert_eq("V=from-env-override\n", file_get_contents($envFile));
+    } finally {
+        putenv('SECRETSMAN_STORE_PATH');
+        putenv('SECRETSMAN_RUNTIME_ROOT');
+    }
+});
+
+t('resolve: an explicit opts[store_path] wins over the env var', function () {
+    $dir = scratch_dir();
+    $envStorePath = write_store($dir, ['ns' => ['k' => 'from-env-should-not-win']]);
+    $optsStorePath = write_store($dir, ['ns' => ['k' => 'from-opts-should-win']], 0600);
+    // give the opts store a distinct filename so both can coexist
+    rename($optsStorePath, $dir . '/opts-store.json');
+    $optsStorePath = $dir . '/opts-store.json';
+
+    putenv("SECRETSMAN_STORE_PATH={$envStorePath}");
+    try {
+        $xml = ['Config' => [variable_config('V', '!secret ns/k')], 'ExtraParams' => ''];
+        secretsman_resolve($xml, 'ctr', ['store_path' => $optsStorePath, 'runtime_root' => $dir . '/run']);
+        $envFile = glob($dir . '/run/env/*.env')[0];
+        assert_eq("V=from-opts-should-win\n", file_get_contents($envFile));
+    } finally {
+        putenv('SECRETSMAN_STORE_PATH');
+    }
+});
+
 // ---------------------------------------------------------------------------
 // Never log a resolved secret
 // ---------------------------------------------------------------------------
@@ -519,6 +561,272 @@ t('never-log: a successful resolve never puts the sentinel in $cmd-facing output
     secretsman_resolve($xml, 'ctr', ['store_path' => $storePath, 'runtime_root' => $dir . '/run']);
     $serialized = json_encode($xml);
     assert_true(strpos($serialized, $sentinel) === false, 'sentinel leaked into resolved $xml');
+});
+
+// ---------------------------------------------------------------------------
+// Patch layer
+// ---------------------------------------------------------------------------
+
+function fixture_helpers_contents(): string
+{
+    // A minimal but structurally faithful stand-in for xmlToCommand()'s
+    // relevant slice: real leading code, then the exact anchor line as it
+    // appears in Helpers.php:508, then real trailing code. Good enough to
+    // exercise anchor-finding without needing the full 795-line file.
+    return "<?php\n" .
+        "function xmlToCommand(\$xml, \$create_paths=false) {\n" .
+        "  global \$docroot, \$var, \$driver;\n" .
+        "  \$xml = xmlToVar(\$xml);\n" .
+        "  \$Volumes = [''];\n" .
+        SECRETSMAN_PATCH_ANCHOR .
+        "    \$confType = strtolower(strval(\$config['Type']));\n" .
+        "  }\n" .
+        "  return [\$cmd, \$xml['Name'], \$xml['Repository']];\n" .
+        "}\n";
+}
+
+t('patch: real committed reference/7.3.x/Helpers.php contains exactly one anchor', function () {
+    $real = file_get_contents(__DIR__ . '/../reference/7.3.x/Helpers.php');
+    $first = strpos($real, SECRETSMAN_PATCH_ANCHOR);
+    assert_true($first !== false, 'anchor not found in the real reference file');
+    assert_true(strpos($real, SECRETSMAN_PATCH_ANCHOR, $first + 1) === false, 'anchor is not unique in the real reference file');
+});
+
+t('patch: verify() reports unpatched-known-good against the real reference hash', function () {
+    $real = __DIR__ . '/../reference/7.3.x/Helpers.php';
+    $knownHash = md5(file_get_contents($real));
+    $result = secretsman_patch_verify($real, [$knownHash]);
+    assert_eq('unpatched-known-good', $result['status']);
+    assert_eq($knownHash, $result['hash']);
+});
+
+t('patch: verify() reports mismatch against an unrecognised hash, and does not throw', function () {
+    $real = __DIR__ . '/../reference/7.3.x/Helpers.php';
+    $result = secretsman_patch_verify($real, ['0000000000000000000000000000000']);
+    assert_eq('mismatch', $result['status']);
+});
+
+t('patch: apply() injects the block immediately before the anchor, anchor line itself untouched', function () {
+    $patched = secretsman_patch_apply(fixture_helpers_contents(), '/plugin/dir/src/secretsman.php');
+    assert_true(secretsman_patch_is_applied($patched));
+    assert_true(strpos($patched, SECRETSMAN_PATCH_ANCHOR) !== false, 'original anchor line must survive');
+    assert_true(strpos($patched, "secretsman_resolve(\$xml, \$xml['Name']);") !== false);
+    assert_true(strpos($patched, "require_once '/plugin/dir/src/secretsman.php';") !== false);
+    // the injected call comes BEFORE the loop, not after
+    assert_true(strpos($patched, 'secretsman_resolve') < strpos($patched, SECRETSMAN_PATCH_ANCHOR));
+});
+
+t('patch: apply() is not idempotent by itself — calling it twice throws', function () {
+    $once = secretsman_patch_apply(fixture_helpers_contents(), '/plugin/dir/src/secretsman.php');
+    assert_throws(fn() => secretsman_patch_apply($once, '/plugin/dir/src/secretsman.php'), SecretsmanPatchError::class);
+});
+
+t('patch: is_applied() is what makes the whole flow idempotent', function () {
+    $fresh = fixture_helpers_contents();
+    assert_true(!secretsman_patch_is_applied($fresh));
+    $once = secretsman_patch_apply($fresh, '/plugin/dir/src/secretsman.php');
+    assert_true(secretsman_patch_is_applied($once));
+});
+
+t('patch: apply() throws if the anchor is missing entirely', function () {
+    assert_throws(fn() => secretsman_patch_apply("<?php\necho 'nothing to see here';\n", '/x'), SecretsmanPatchError::class);
+});
+
+t('patch: apply() refuses to guess if the anchor appears more than once', function () {
+    $doubled = fixture_helpers_contents() . SECRETSMAN_PATCH_ANCHOR;
+    assert_throws(fn() => secretsman_patch_apply($doubled, '/x'), SecretsmanPatchError::class, 'not unique');
+});
+
+t('patch: apply_to_file() patches a known-good copy and preserves file mode', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/Helpers.php';
+    file_put_contents($path, fixture_helpers_contents());
+    chmod($path, 0644);
+    $hash = md5(file_get_contents($path));
+
+    $result = secretsman_patch_apply_to_file($path, '/plugin/dir/src/secretsman.php', [$hash]);
+    assert_eq('unpatched-known-good', $result['status']);
+    assert_true(secretsman_patch_is_applied(file_get_contents($path)));
+    assert_eq('0644', substr(sprintf('%o', fileperms($path)), -4));
+});
+
+t('patch: apply_to_file() is a no-op on an already-patched file, leaves it byte-identical', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/Helpers.php';
+    file_put_contents($path, fixture_helpers_contents());
+    $hash = md5(file_get_contents($path));
+    secretsman_patch_apply_to_file($path, '/plugin/dir/src/secretsman.php', [$hash]);
+    $afterFirstPatch = file_get_contents($path);
+
+    $result = secretsman_patch_apply_to_file($path, '/plugin/dir/src/secretsman.php', [$hash]);
+    assert_eq('already-patched', $result['status']);
+    assert_eq($afterFirstPatch, file_get_contents($path), 'second run must not touch the file at all');
+});
+
+t('patch: apply_to_file() on a mismatched file leaves it completely untouched and does not throw', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/Helpers.php';
+    $original = fixture_helpers_contents();
+    file_put_contents($path, $original);
+    chmod($path, 0644);
+
+    $result = secretsman_patch_apply_to_file($path, '/plugin/dir/src/secretsman.php', ['0000000000000000000000000000000']);
+    assert_eq('mismatch', $result['status']);
+    assert_eq($original, file_get_contents($path), 'a hash mismatch must never modify the file — fail closed, notify, leave it working');
+});
+
+t('patch: block() safely escapes an unusual lib path (var_export, not string concatenation)', function () {
+    $weirdPath = "/plugin dir/it's-a-trap\$xml/secretsman.php";
+    $block = secretsman_patch_block($weirdPath);
+    // must be syntactically valid PHP on its own merits, not just "didn't throw"
+    $tmp = tempnam(sys_get_temp_dir(), 'secretsman-lint-');
+    file_put_contents($tmp, "<?php\nfunction f(){\n$block}\n");
+    exec('php -l ' . escapeshellarg($tmp) . ' 2>&1', $out, $code);
+    unlink($tmp);
+    assert_eq(0, $code, 'injected block with an unusual path must still be valid PHP: ' . implode("\n", $out));
+});
+
+t('patch: the real reference/7.3.x/Helpers.php, patched, still lints clean under php -l', function () {
+    $real = __DIR__ . '/../reference/7.3.x/Helpers.php';
+    $patched = secretsman_patch_apply(file_get_contents($real), '/plugin/dir/src/secretsman.php');
+    $tmp = tempnam(sys_get_temp_dir(), 'secretsman-lint-real-');
+    file_put_contents($tmp, $patched);
+    exec('php -l ' . escapeshellarg($tmp) . ' 2>&1', $out, $code);
+    unlink($tmp);
+    assert_eq(0, $code, 'patched real Helpers.php must lint clean: ' . implode("\n", $out));
+});
+
+// ---------------------------------------------------------------------------
+// Plugin scripts (plugin/scripts/) — Phase 2
+// ---------------------------------------------------------------------------
+// apply_patch_main()/repopulate_main()/force_start_main() themselves hit
+// hardcoded Unraid system paths by design (the live Helpers.php, /var/lib
+// /docker/unraid-autostart, /boot/config/plugins/dockerMan/templates-user)
+// and are validated end-to-end by tests/harness/ against the live host,
+// not here. What's tested here is every pure/parameterized piece they're
+// built from.
+
+function fixture_template_xml(array $configEntries): string
+{
+    $xml = "<?xml version=\"1.0\"?>\n<Container version=\"2\">\n  <Name>fixture</Name>\n";
+    foreach ($configEntries as $c) {
+        $xml .= sprintf(
+            "  <Config Name=\"%s\" Target=\"%s\" Default=\"%s\" Mode=\"\" Type=\"%s\">%s</Config>\n",
+            htmlspecialchars($c['name'] ?? 'x'),
+            htmlspecialchars($c['target'] ?? 'X'),
+            htmlspecialchars($c['default'] ?? ''),
+            htmlspecialchars($c['type'] ?? 'Variable'),
+            htmlspecialchars($c['value'] ?? '')
+        );
+    }
+    $xml .= "</Container>\n";
+    return $xml;
+}
+
+t('common: secretsman_template_path_for() matches the real my-<Name>.xml convention', function () {
+    assert_eq(SECRETSMAN_TEMPLATES_DIR . '/my-AdGuardHome.xml', secretsman_template_path_for('AdGuardHome'));
+});
+
+t('common: secretsman_find_file_tokens() finds a !secretfile token in a Variable field', function () {
+    $dir = scratch_dir();
+    $tpl = $dir . '/my-fixture.xml';
+    file_put_contents($tpl, fixture_template_xml([
+        ['target' => 'MY_TOKEN', 'type' => 'Variable', 'value' => '!secretfile ns/key'],
+    ]));
+    $tokens = secretsman_find_file_tokens($tpl);
+    assert_eq([['ns' => 'ns', 'key' => 'key']], $tokens);
+});
+
+t('common: secretsman_find_file_tokens() excludes !secret (env-mode) tokens', function () {
+    $dir = scratch_dir();
+    $tpl = $dir . '/my-fixture.xml';
+    file_put_contents($tpl, fixture_template_xml([
+        ['target' => 'ENV_TOKEN', 'type' => 'Variable', 'value' => '!secret ns/key'],
+    ]));
+    assert_eq([], secretsman_find_file_tokens($tpl));
+});
+
+t('common: secretsman_find_file_tokens() ignores non-Variable fields entirely', function () {
+    $dir = scratch_dir();
+    $tpl = $dir . '/my-fixture.xml';
+    // Shouldn't be possible in a saved template (creation would have
+    // aborted), but the scanner must not crash or misparse if it happens.
+    file_put_contents($tpl, fixture_template_xml([
+        ['target' => '/x', 'type' => 'Path', 'default' => '!secretfile ns/key'],
+    ]));
+    assert_eq([], secretsman_find_file_tokens($tpl));
+});
+
+t('common: secretsman_find_file_tokens() skips a malformed token without throwing', function () {
+    $dir = scratch_dir();
+    $tpl = $dir . '/my-fixture.xml';
+    file_put_contents($tpl, fixture_template_xml([
+        ['target' => 'BAD', 'type' => 'Variable', 'value' => '!secretfoo ns/key'],
+        ['target' => 'GOOD', 'type' => 'Variable', 'value' => '!secretfile ns/good'],
+    ]));
+    assert_eq([['ns' => 'ns', 'key' => 'good']], secretsman_find_file_tokens($tpl));
+});
+
+t('common: secretsman_find_file_tokens() returns [] for a missing/unreadable template', function () {
+    assert_eq([], secretsman_find_file_tokens('/nonexistent/my-x.xml'));
+});
+
+t('repopulate: read_autostart_list() parses names, ignores blank lines, handles a wait-seconds column', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/unraid-autostart';
+    file_put_contents($path, "AdGuardHome\n\nbinhex-deluge 10\n");
+    assert_eq(['AdGuardHome', 'binhex-deluge'], read_autostart_list($path));
+});
+
+t('repopulate: read_autostart_list() returns null for a missing file', function () {
+    assert_eq(null, read_autostart_list('/nonexistent/unraid-autostart'));
+});
+
+t('patch: secretsman_patch_revert() exactly undoes secretsman_patch_apply()', function () {
+    $original = fixture_helpers_contents();
+    $patched = secretsman_patch_apply($original, '/plugin/dir/src/secretsman.php');
+    $reverted = secretsman_patch_revert($patched);
+    assert_eq($original, $reverted);
+});
+
+t('patch: secretsman_patch_revert() is a no-op on already-stock content', function () {
+    $stock = fixture_helpers_contents();
+    assert_eq($stock, secretsman_patch_revert($stock));
+});
+
+t('patch: secretsman_patch_revert() round-trips the real reference/7.3.x/Helpers.php', function () {
+    $original = file_get_contents(__DIR__ . '/../reference/7.3.x/Helpers.php');
+    $patched = secretsman_patch_apply($original, '/plugin/dir/src/secretsman.php');
+    assert_eq($original, secretsman_patch_revert($patched));
+});
+
+t('apply_patch: detect_unraid_reference_dir() maps 7.3.1 to 7.3.x', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/unraid-version';
+    file_put_contents($path, "version=\"7.3.1\"\n");
+    assert_eq('7.3.x', detect_unraid_reference_dir($path));
+});
+
+t('apply_patch: detect_unraid_reference_dir() returns null for a missing version file', function () {
+    assert_eq(null, detect_unraid_reference_dir('/nonexistent/unraid-version'));
+});
+
+t('apply_patch: detect_unraid_reference_dir() returns null for unparseable content', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/unraid-version';
+    file_put_contents($path, "not a version string\n");
+    assert_eq(null, detect_unraid_reference_dir($path));
+});
+
+t('apply_patch: load_known_good_hashes() parses valid lines, ignores malformed ones', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/HASHES';
+    file_put_contents($path, "# comment-shaped line is not our format, ignored\nHelpers.php  md5:9a45421b387b733ad260e204308baa69\nHelpers.php  md5:notahexhash\n");
+    assert_eq(['9a45421b387b733ad260e204308baa69'], load_known_good_hashes($path));
+});
+
+t('apply_patch: load_known_good_hashes() returns [] for a missing file', function () {
+    assert_eq([], load_known_good_hashes('/nonexistent/HASHES'));
 });
 
 // ---------------------------------------------------------------------------

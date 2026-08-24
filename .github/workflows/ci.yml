@@ -16,9 +16,10 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php-version }}
+          extensions: simplexml
 
       - name: Lint
-        run: find src tests -name '*.php' -print0 | xargs -0 -n1 php -l
+        run: find src plugin tests -name '*.php' -print0 | xargs -0 -n1 php -l
 
       - name: Test
         run: php tests/run.php

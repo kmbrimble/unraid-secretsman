@@ -1,0 +1,51 @@
+#!/bin/bash
+# Assembles the installable plugin tree and packages it as a .txz + .md5,
+# for attaching to a GitHub Release (see CLAUDE.md "Shipping model").
+#
+# NOT run automatically by anything — a deliberate, manual release step.
+# Building a package is not the same as publishing it: this script only
+# produces local files; cutting the actual GitHub Release is a separate,
+# explicit action.
+#
+# Usage: scripts/build-plugin.sh [version]
+#   version defaults to today's date (YYYY.MM.DD), matching the .plg's
+#   own version-entity convention.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VERSION="${1:-$(date +%Y.%m.%d)}"
+NAME="unraid-secretsman"
+BUILD_DIR="$(mktemp -d)"
+PKG_DIR="$BUILD_DIR/$NAME"
+OUT_DIR="$REPO_ROOT/dist"
+
+trap 'rm -rf "$BUILD_DIR"' EXIT
+
+echo "Building $NAME-$VERSION.txz ..."
+
+mkdir -p "$PKG_DIR"/{src,scripts,event,reference}
+
+# Resolve the repo's src/ <-> plugin/src symlink into real files in the
+# package — a .txz has no business shipping symlinks that only make sense
+# inside this git checkout.
+cp "$REPO_ROOT"/src/*.php "$PKG_DIR/src/"
+cp "$REPO_ROOT"/plugin/scripts/*.php "$PKG_DIR/scripts/"
+cp "$REPO_ROOT"/plugin/event/disks_mounted "$PKG_DIR/event/"
+chmod +x "$PKG_DIR/event/disks_mounted"
+cp -r "$REPO_ROOT"/reference/. "$PKG_DIR/reference/"
+
+mkdir -p "$OUT_DIR"
+TXZ_PATH="$OUT_DIR/$NAME-$VERSION.txz"
+( cd "$BUILD_DIR" && tar -cJf "$TXZ_PATH" "$NAME" )
+
+MD5=$(md5sum "$TXZ_PATH" | awk '{print $1}')
+echo "$MD5" > "$OUT_DIR/$NAME.md5"
+
+echo "Built: $TXZ_PATH"
+echo "  md5: $MD5"
+echo
+echo "Next (manual, not run by this script):"
+echo "  1. Update unraid-secretsman.plg: &version; to $VERSION, &md5; to $MD5"
+echo "  2. git commit the updated .plg"
+echo "  3. gh release create v$VERSION $TXZ_PATH $OUT_DIR/$NAME.md5"

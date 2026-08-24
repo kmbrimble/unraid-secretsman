@@ -63,6 +63,31 @@ This should match the known-good hash in `reference/<your-version>/HASHES` in th
 doesn't match *and* doesn't match a hash you recognise as this plugin's patched version either,
 something else changed the file — stop and investigate before reinstalling anything.
 
+## A container is held back because a !secretfile source is missing
+
+This is a different situation from "the plugin broke something" — the patch and the system are
+both fine. This happens when a `!secretfile`-using container was set to autostart, its secret
+source under `/run/secretsman/files/` didn't get repopulated (store was unreadable at boot, key
+was renamed, etc.), and Unraid's own `container_paths_exist()` check (in `/etc/rc.d/rc.docker`)
+correctly left it stopped rather than starting it with an empty directory bind-mounted in place.
+You'll see an "secretsman: Container held back" notification naming the container and the
+missing key when this happens.
+
+**Once you've fixed the underlying problem** (the store is readable again, the key exists again,
+etc.), you don't have to wait for the next array restart — one command re-attempts
+materialisation for that one container and starts it immediately if it succeeds:
+
+```sh
+php /usr/local/emhttp/plugins/unraid-secretsman/scripts/force_start.php <ContainerName>
+```
+
+This still fails closed: it refuses to run `docker start` if the secret still can't be
+materialised, and tells you exactly which `ns/key` is still the problem. It does **not** bypass
+the check — if you genuinely want to start a container with a missing secret file anyway
+(accepting that Docker will bind-mount an empty directory in its place), that's a decision this
+script deliberately won't make for you; use `docker start <ContainerName>` directly if you're
+sure.
+
 ## Standing rule
 
 Any change to the patch layer (Phase 2+) requires this recovery drill to be re-run and

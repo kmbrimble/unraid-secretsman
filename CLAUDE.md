@@ -68,10 +68,60 @@ Host: Unraid 7.3.1, kernel 6.18.33, PHP 8.4.21.
     sources; worth remembering it's small.
   - **`!secretfile` bind-mount sources live in tmpfs and do not survive a reboot.** An
     autostarting container would bind-mount a path docker silently recreates as an empty
-    directory. Phase 2 must repopulate `/run/secretsman/files/` from the `.plg` boot block
-    *before* docker autostart runs. This is why `secretsman_resolve()` (Phase 1) is written to
-    be idempotent when re-run for the same container/key — see the "idempotent" test in
-    `tests/run.php`.
+    directory. **Correction during Phase 2a: repopulation cannot live in the `.plg`'s `rc.local`
+    boot block as originally assumed** — the store lives under `/mnt/user`, which isn't mounted
+    that early. See "Array-start hook" below for the `disks_mounted` hook actually used, and why
+    it's safe. This is still why `secretsman_resolve()` (Phase 1) is written to be idempotent
+    when re-run for the same container/key — see the "idempotent" test in `tests/run.php` — since
+    repopulation calls the same materialisation path a second time.
+
+## Array-start hook (Phase 2a recon, 2026-08-25, read-only against the live host)
+
+The Phase 1 plan assumed `!secretfile` repopulation could live in the `.plg`'s `rc.local` boot
+block. **That assumption was wrong** — the store lives at
+`/mnt/user/appdata/.secrets/store.json`, which doesn't exist until the array starts, and
+`rc.local` runs well before that. This needed a real Unraid event hook, found and verified as
+follows, entirely by reading vendor scripts already on the host — no reboot, no live test:
+
+- **The hook system:** `/usr/local/sbin/emhttp_event` (a real, readable shell script) is invoked
+  by the compiled `emhttpd` daemon on each of a fixed set of named events, and for each one
+  iterates `/usr/local/emhttp/plugins/*/event/<eventname>` — a plugin "registers" for an event
+  simply by dropping an executable file at that path. Its own header comment states the full
+  event order for array start: `starting → array_started → disks_mounted → svcs_restarted →
+  docker_started → libvirt_started → started`, and warns that **`emhttpd` blocks on each event
+  script until it completes** — this blocking property is what makes an ordering guarantee
+  possible at all.
+- **The hook to use is `disks_mounted`, not `docker_started`.** `docker_started` sounds like the
+  natural choice for "before docker starts containers," but it is actively unsafe: reading
+  `/etc/rc.d/rc.docker`'s `start)` case shows `docker_container_start &>/dev/null &` — the
+  autostart loop is launched as an **explicitly backgrounded job**, while `docker_service_start`
+  and `docker_network_start` run synchronously before it. `rc.docker start` therefore returns
+  (and `docker_started` fires) right after that background job is *launched*, not after it
+  finishes — a hook on `docker_started` races real container starts and can lose for early
+  entries in `unraid-autostart`. `disks_mounted`, by contrast, fires and *fully completes*
+  (blocking) before `svcs_restarted`, before `rc.docker start` is ever invoked, before
+  `docker_container_start` is even launched — a strict happens-before guarantee, not a race.
+- **`/var/lib/docker` (`$DOCKER_ROOT`) is already mounted by the time `disks_mounted` fires.**
+  `rc.docker`'s `docker_service_start()` only *checks* `mountpoint $DOCKER_ROOT` and fails if it
+  isn't — it never mounts it itself — confirming something upstream (the array's own disk-mount
+  phase) already mounted it before docker's own startup code ever runs. `/var/lib/docker/
+  unraid-autostart` (the container-name list `rc.docker` reads) is therefore already readable at
+  `disks_mounted` time.
+- **`rc.local`'s patch step has zero dependency on the array.** `rc.local` runs unconditionally
+  during normal boot and ends by launching `/usr/local/sbin/emhttp`; array start (auto-triggered
+  by config, or a manual click) is a *runtime action taken later by the now-running `emhttp`
+  daemon*, entirely decoupled from `rc.local`. Confirmed by reading `rc.local` itself — nothing
+  in it waits for or triggers an array start. So the Helpers.php patch applies every boot
+  regardless of whether the array is ever started, exactly as Phase 1 assumed.
+- **Corollary — the "block a container" mechanism doesn't need building.** `rc.docker`'s own
+  autostart loop already calls `container_paths_exist()` before every `docker start`, which
+  inspects `docker inspect --format='{{range .Mounts}}{{.Source}}|{{end}}'` and refuses to start
+  a container if any bind-mount source is missing — logging it itself. Since a `!secretfile`
+  entry is registered as an ordinary `Path`-type Config entry (Phase 1 design), this native
+  check already "holds back" a container with an unrepopulated secret file, for free. Phase 2's
+  `scripts/repopulate.php` therefore has exactly one job: win the race (guaranteed by the
+  `disks_mounted` ordering above) and raise a clearer notification than the native syslog line —
+  not implement blocking itself. See `plugin/scripts/repopulate.php`'s own header comment.
 
 ## Store format
 
@@ -92,11 +142,23 @@ deliberate, narrow starting scope: Labels land in `docker inspect` regardless an
 either offer no real protection or violate rule 6 above. **Widening this scope later is
 additive; narrowing it would be breaking** — so start narrow, widen only on a demonstrated need.
 
-## Shipping model (Phase 2 — not built yet)
+## Shipping model
 
 Not going into Community Applications. Self-hosted `.plg` installed by URL from
 `raw.githubusercontent.com`, with a packaged `.txz` attached to a GitHub Release. The `.plg`'s
-version entity and md5 are bumped per release.
+version entity and md5 are bumped per release via `scripts/build-plugin.sh`, which assembles
+the installable tree (resolving the repo's `plugin/src` → `../src` symlink into real files —
+see "Repo layout" below) and prints the exact next manual steps. **No release has been cut yet**
+— see the Phase 2 roadmap entry above for why that's deliberate.
+
+### Repo layout note
+
+`plugin/src` and `plugin/reference` are symlinks to the top-level `src/` and `reference/` —
+there is exactly one copy of each file at rest in the repo (avoiding drift between "the library"
+and "what ships"), and `plugin/` on its own already matches the real installed layout
+(`/usr/local/emhttp/plugins/unraid-secretsman/`) for local testing. `scripts/build-plugin.sh`
+resolves the symlinks into real files when it packages a release, since a `.txz` has no business
+shipping symlinks that only make sense inside this git checkout.
 
 ## Phase roadmap
 
@@ -108,23 +170,46 @@ version entity and md5 are bumped per release.
   Composer/PHPUnit — nothing here needs a framework), failing-first per `/feature` discipline.
   Fully isolated from the live Unraid install — no writes to `/usr/local/emhttp`, `/boot`, or
   the store location happen in this phase.
-- **Phase 2 — Patch layer + `.plg`.** The checksum-guarded injection into `Helpers.php` at the
-  confirmed insertion point; the boot-time repopulation of `/run/secretsman/files/` before
-  docker autostart; the `.plg` itself, packaging, and the GitHub Release shipping model above.
+- **Phase 2 — Patch layer + `.plg` (in progress, this repo).**
+  `src/patch.php`: the checksum-guarded, idempotent, marker-delimited injection/reversion at the
+  confirmed insertion point (`secretsman_patch_apply`/`_revert`/`_verify`/`_apply_to_file`).
+  `plugin/`: the installed-plugin tree — `scripts/apply_patch.php` (boot-time patch, per-version
+  hash lookup from bundled `reference/`), `scripts/repopulate.php` (the `disks_mounted` hook
+  logic above), `scripts/force_start.php` (the recovery override, see `RECOVERY.md`),
+  `scripts/uninstall.php` (clean revert on Remove), `event/disks_mounted` (the registration
+  file itself). `tests/harness/`: the staging harness (`render_cmd.php` + `regression.php`) that
+  proved stock vs. patched byte-identical output across every real template on the recon host
+  (48/48) plus a token-bearing fixture leaking nothing into `$cmd` — see the harness's own
+  header comments for why it bootstraps `xmlToCommand()`'s dependencies manually rather than
+  reusing the full webGui HTTP-request chain. `unraid-secretsman.plg` and
+  `scripts/build-plugin.sh`: the installable artifact and its packaging step — **not yet
+  released**; publishing a real GitHub Release is deliberately deferred until the live-system
+  verification steps (applying to the real `Helpers.php`, then a real reboot) succeed. Shipping
+  an installable plugin before that would let someone install a patch that's only been proven
+  safe against copies.
   **Requires the `RECOVERY.md` drill to be run and confirmed working before it ships**, and
-  again after every subsequent change to the patch layer.
+  again after every subsequent change to the patch layer. (Done for Phase 2, see
+  `docs/phase2-resume.md`.)
   **Also required: a test asserting the resolved value appears nowhere in the command string
-  dockerMan renders, or in the output it displays.** The Phase 1 never-log tests only cover
-  `src/secretsman.php`'s own strings (its exceptions, its return values) — they say nothing
-  about what the patched `xmlToCommand()` actually hands back to the GUI. That's the property
-  that matters: what the user *sees* has to be clean, not just what the library itself emits.
-  This has to run against the patched function's real return value, not a mock of it.
+  dockerMan renders, or in the output it displays.** Delivered as
+  `tests/harness/regression.php`'s "token-bearing fixture" check — it runs the real patched
+  `xmlToCommand()` (via the staging harness bootstrap) against a fixture template and asserts
+  the sentinel value from a fixture store appears nowhere in the returned `$cmd`. This runs
+  against the patched function's real return value on the real host, not a mock of it.
 - **Phase 3 (not yet scoped) — GUI page** for managing the store (add/edit/remove secrets)
   without hand-editing `store.json` over SSH.
 
 ## Testing
 
-`php tests/run.php` — no framework, no fixtures beyond what's inline in the test file. All
-fixture values are obviously-fake (`test-value-not-a-real-secret`, sentinel strings) — this repo
-is public; never put a real key or real store contents in a commit, fixture, or example, even a
-throwaway one.
+`php tests/run.php` — no framework, no fixtures beyond what's inline in the test file (plus
+`tests/harness/fixtures/`, both throwaway/synthetic). All fixture values are obviously-fake
+(`test-value-not-a-real-secret`, sentinel strings) — this repo is public; never put a real key or
+real store contents in a commit, fixture, or example, even a throwaway one.
+
+`tests/harness/` is a second, separate layer: `render_cmd.php` renders one template through one
+Helpers.php variant by bootstrapping just enough of Unraid's own runtime (not the full webGui
+request chain — see its header comment for why); `regression.php` orchestrates it across every
+real template on a live host plus the committed fixture template, and is meant to be run ON that
+host, read-only. It deliberately never prints full command content (real templates' real paths/
+ports), only filenames and pass/fail — its own output is safe to paste anywhere, matching the
+project's own premise.
