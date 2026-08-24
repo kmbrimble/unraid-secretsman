@@ -1,4 +1,82 @@
-# Phase 2 resume brief — GATE 2 (round 2, after the first reboot)
+# Phase 2 resume brief — GATE 2 (round 3 — ready to reboot)
+
+## LATEST UPDATE — everything below "round 2" is superseded. Read this section only.
+
+Since the round-2 update further down, the `.plg` install bug was found, fixed, and the full
+install completed successfully end-to-end on the live host. **This is genuinely ready for you
+to reboot from.** The round-2 section below is kept for its still-accurate detail (the
+`RAM-DISK-Dockerlog` removal, the incident analysis) but its "not yet root-caused" and
+"plugin tree absent" claims are now stale — this section supersedes them.
+
+**The `.plg` bug, found by actually running the real mechanism (not by inspection):**
+`scripts/build-plugin.sh` archived the package tree rooted at `unraid-secretsman/...` instead
+of the real absolute destination `usr/local/emhttp/plugins/unraid-secretsman/...`. Slackware's
+`upgradepkg` extracts relative to `/`, not relative to any "plugins" convention, so this landed
+everything at `/unraid-secretsman` instead — confirmed by reproducing the exact failure live:
+`php` on the (correct, but then-nonexistent) expected path printed `Could not open input file`
+and exited 1, matching `rc.local: plugin: run failed: '/bin/bash' returned 1` byte-for-byte.
+Fixed in `scripts/build-plugin.sh`; regression-tested in `tests/run.php` (runs the real
+packaging script, inspects the real archive — confirmed to fail against the old script and
+pass against the fix). See CLAUDE.md for the standing rule this added: the `.plg` install must
+always be exercised through the genuine packaging + `upgradepkg` path, never verified by
+pre-placing files at the destination — that's exactly what produced a false "it works" result
+earlier in this phase.
+
+**Full install completed end-to-end on the live host, for real, just now:**
+1. Stock hash re-verified immediately before the write: `9a45421b387b733ad260e204308baa69` —
+   unchanged, no drift, across the entire phase.
+2. `/usr/local/sbin/plugin install /boot/config/plugins/unraid-secretsman.plg` run for real.
+   Output: `secretsman: Helpers.php patched (was 9a45421b387b733ad260e204308baa69)` /
+   `secretsman: install complete` / `plugin: unraid-secretsman.plg installed`. Exit 0.
+3. Patched hash confirmed: `cdb8204eb82b489d24ecabf906f858ac`, exactly one
+   `SECRETSMAN-PATCH-BEGIN` marker, `php -l` clean.
+4. **The full 48-template regression harness re-run against the actual live patched file**
+   (same bar as the original step 3): `48 templates checked, 48 identical, 0 mismatches, 0
+   errors`; token-bearing fixture check `PASS`.
+5. Plugin registration confirmed normal: `/var/log/plugins/unraid-secretsman.plg` symlinks to
+   the flash `.plg`; `/boot/config/plugins-error/` is clean, nothing quarantined.
+
+**Exact persistent flash paths** (so the next boot's `upgradepkg --install-new` skips the
+download exactly as designed — these are the paths to check if anything looks wrong):
+```
+/boot/config/plugins/unraid-secretsman.plg                          (the installed .plg)
+/boot/config/plugins/unraid-secretsman/unraid-secretsman-2026.08.25.txz   (md5 db9634bc355245df0a0f86cd44a96944)
+/boot/config/plugins/unraid-secretsman/unraid-secretsman.md5              (content: db9634bc355245df0a0f86cd44a96944)
+```
+All three hash-consistent, confirmed together immediately before the install ran.
+
+**`secretsman-smoketest` recreated, autostart re-enabled, verified pre-reboot exactly as
+before:** store entry rewritten atomically at `/mnt/user/appdata/.secrets/store.json`; template
+resaved at `/boot/config/plugins/dockerMan/templates-user/my-secretsman-smoketest.xml`;
+container created via the same live `xmlToCommand()` path (sentinel confirmed absent from
+`$cmd`); started; bind-mount source at `/run/secretsman/files/secretsman-smoketest/
+throwaway-key` mode `0400`; `docker exec secretsman-smoketest cat /run/secrets/throwaway-key`
+→ exact match `smoketest-value-not-a-real-secret`. Appended to `/var/lib/docker/
+unraid-autostart` (original backed up to `unraid-autostart.pre-smoketest.bak` first, same
+pattern as before). **This reboot will test repopulation timing, not just the re-patch.**
+
+**Full pre-reboot state, confirmed together in one pass immediately before writing this:**
+```
+Helpers.php:           patched, md5 cdb8204eb82b489d24ecabf906f858ac, 1 marker, php -l clean
+Plugin registration:   /var/log/plugins/unraid-secretsman.plg -> flash .plg, normal
+plugins-error/:        clean
+secretsman-smoketest:  Up, autostart enabled, verified working (see above)
+RAM-DISK-Dockerlog:    still fully absent (rc.docker/monitor.php clean, confirmed again)
+Radarr/TimeMachine/Unpackerr: still Up, healthy, unaffected by this round's work
+```
+
+**What's still unproven, honestly:** everything above is the *pre-boot* state. Boot-time
+re-patch idempotency and `!secretfile` repopulation timing are both **ready to be tested, not
+yet proven** — that's what your reboot is for. See "What the reboot is expected to prove" and
+the verification command sections further down (still accurate for the retry), plus "The
+reboot smoketest" section for the repopulation-specific checks, and the dedicated
+"Post-reboot check: RAM-DISK-Dockerlog removal" section, still separate as before since two
+independent changes are in play on this boot (RAM-Disk removal taking effect, and the re-patch
+retry).
+
+---
+
+## Round 2 update (superseded above, kept for the still-accurate incident detail below)
 
 ## UPDATE — the first Gate 2 reboot already happened. Read this before anything below.
 
@@ -534,22 +612,18 @@ a container and get an error mentioning "secretsman"):
   fail-closed design working as intended (bad token, missing store, wrong permissions). The
   error names the shape of the problem, never a value.
 
-## Not yet done — current, as of the top UPDATE (supersedes the stale bullets this section used to have)
+## Not yet done — current, as of the LATEST UPDATE at the top (supersedes everything below it)
 
-- **Boot-time re-patch: UNPROVEN.** The plugin never installed on the first reboot (see UPDATE
-  at the top) — `Helpers.php` is stock right now. This still needs a second reboot attempt,
-  after the `.plg` install bug is found and fixed.
-- **`!secretfile` repopulation timing: UNPROVEN**, for the same reason — the resolver was never
-  in place for `disks_mounted` to call, and `secretsman-smoketest` (the container set up
-  specifically to test this) didn't survive the reboot at all, unrelated to secretsman (see
-  UPDATE). It's been removed along with its residue. **A future session will need to set up a
-  fresh `!secretfile` smoketest container again** before the next reboot, if timing still needs
-  proving then.
-- **The `.plg` install bug itself is not yet root-caused.** Next step: reproduce with stderr
-  actually captured (Unraid's installer only captures stdout), find the real failure, fix it,
-  get sign-off before touching the live `Helpers.php` again — same Gate 1 rule applies.
-- No public GitHub Release. The download path in the `.plg` has never been exercised. Cutting a
-  real release is a separate, later, explicitly-confirmed action.
+- **Boot-time re-patch: ready to test, not yet proven.** The `.plg` install bug is fixed and
+  the full install has succeeded live, for real, on this host — but that was done by manually
+  running `plugin install`, not by an actual boot. Whether `rc.local` re-invokes it correctly
+  and idempotently at boot is still what your reboot needs to prove.
+- **`!secretfile` repopulation timing: ready to test, not yet proven.** `secretsman-smoketest`
+  has been recreated with autostart enabled and verified working pre-reboot (see LATEST UPDATE
+  at top) — this reboot is what actually tests the `disks_mounted` ordering guarantee.
+- No public GitHub Release. The download path in the `.plg` has never been exercised (this
+  round's install still hit the local-file skip-download path). Cutting a real release is a
+  separate, later, explicitly-confirmed action.
 - Step 6 (verify per this brief) and step 7 (remove the plugin, second reboot, confirm clean
-  stock return) both still wait for you, in fresh sessions, per the original task's Gate 2
-  structure — now with the `.plg` bug fixed and a fresh smoketest container as prerequisites.
+  stock return) both wait for you, in a fresh session, starting now that the pre-reboot state
+  is confirmed good.

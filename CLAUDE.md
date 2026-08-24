@@ -160,6 +160,22 @@ and "what ships"), and `plugin/` on its own already matches the real installed l
 resolves the symlinks into real files when it packages a release, since a `.txz` has no business
 shipping symlinks that only make sense inside this git checkout.
 
+### Standing rule: verify the `.plg` install by actually running it, never by pre-placing files
+
+A real Phase 2 Gate 2 boot failed because `scripts/build-plugin.sh` archived the package tree
+rooted at `unraid-secretsman/...` instead of the real absolute destination
+`usr/local/emhttp/plugins/unraid-secretsman/...` — Slackware's `upgradepkg` extracts relative to
+`/`, not relative to any "plugins" convention, so it silently landed everything at
+`/unraid-secretsman`. This went undetected through an earlier "successful" manual install
+because the plugin tree had already been `scp`'d directly to the correct destination *before*
+`plugin install` ran — `apply_patch.php` executed against those leftover manually-staged files
+while `upgradepkg` mis-extracted the real package the whole time, unnoticed. **Pre-placing files
+at the expected destination and then testing the script that's supposed to place them there
+proves nothing about whether that script actually works.** Any future check of the `.plg`
+install (or its remove path) must start from a clean slate — no plugin directory, no package
+registry entry — and go through the real `upgradepkg`/`plugin install` mechanism end to end, the
+same way a real boot would. See `docs/phase2-resume.md` for the full incident.
+
 ## Phase roadmap
 
 - **Phase 0 — Gate (done, read-only).** Confirm the single-producer assumption; establish the
