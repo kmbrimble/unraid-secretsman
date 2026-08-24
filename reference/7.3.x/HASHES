@@ -1,0 +1,9 @@
+# Known-good hashes for reference/7.3.x source files.
+#
+# The Phase 2 patch layer must checksum-verify the live Helpers.php against
+# this hash before injecting anything, and refuse (raising an Unraid
+# notification) on mismatch. Never a whole-file replacement.
+#
+# Captured: 2026-08-24, live host, Unraid 7.3.1, kernel 6.18.33.
+
+Helpers.php  md5:9a45421b387b733ad260e204308baa69
