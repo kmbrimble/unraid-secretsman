@@ -1,6 +1,93 @@
-# Phase 2 resume brief — GATE 2 (round 3 — ready to reboot)
+# Phase 2 resume brief — PAUSED pending a live data-loss investigation unrelated to secretsman
 
-## LATEST UPDATE — everything below "round 2" is superseded. Read this section only.
+## STATUS AS OF THE SECOND GATE-2 REBOOT (2026-08-25) — read this section only
+
+**Boot-time re-patch: PROVEN.** `.plg` reinstalled cleanly this boot (`Helpers.php patched
+(was 9a45421b387b733ad260e204308baa69)`), live hash confirmed `cdb8204eb82b489d24ecabf906f858ac`,
+1 marker, `plugins-error/` clean. This is banked — do not re-verify it again unless the patch
+layer itself changes.
+
+**`!secretfile` repopulation timing: still UNPROVEN.** `secretsman-smoketest` did not survive
+this boot to be checked (see incident below) — there's nothing left to test the resolver
+against, same as the first reboot, for an unrelated reason this time.
+
+**Phase 2 is paused.** Do not resume roadmap work (step 7, or anything else) until the
+investigation below concludes. This is not a secretsman bug — see next section — but it makes
+the host too unstable to trust for further live testing right now.
+
+---
+
+## ACTIVE INVESTIGATION — live container-directory disappearance, unrelated to secretsman
+
+This reboot reproduced the same `RWLayer of container ... is unexpectedly nil` signature as the
+first Gate-2 reboot, but this time **RAM-DISK-Dockerlog was already removed** and
+`/var/lib/docker/containers` is confirmed real btrfs, not tmpfs — so that explanation is ruled
+out for this round. Four containers hit the nil-RWLayer error during dockerd's own network-state
+restore, 1 second after the daemon started and *before* `rc.docker` even begins starting
+containers: **ESPHome, Overseerr, Immich-Kiosk, Lidarr** (confirmed by reading each container's
+`config.v2.json` `Name` field directly off disk). Overseerr and Lidarr recovered and are running
+fine — proving the error itself is a transient dockerd race, not reliably fatal. ESPHome (never
+autostarts, wasn't even attempted) and Immich-Kiosk (started, then died, `Exited (128)` with a
+stale "6 months ago" timestamp) did not recover.
+
+**`secretsman-smoketest` is a separate, worse phenomenon.** It never appears anywhere in syslog
+(no network-connect line, no start attempt, no error) and is *not* one of the four nil-RWLayer
+containers. Its on-disk container directory
+(`/var/lib/docker/containers/a338ea5bbaea764b3f040ce771c0c0e256599329098f47b0a6501fe87fd573c4`)
+was confirmed present on the real btrfs filesystem after boot, mtime ~10:57 — then **disappeared
+entirely between two consecutive read-only checks seconds apart, with zero corresponding syslog
+entry.** This was watched happening live, not inferred after the fact.
+
+**Why there's no log entry — the boring, confirmed explanation:** `dockerd` runs with
+`--log-opt max-size=10m --log-opt max-file=2 --log-level=fatal`. Anything below fatal severity —
+which would include a routine internal cleanup/reconciliation message — is never written,
+independent of any exotic cause. This alone explains the silence; it doesn't by itself explain
+the deletion.
+
+**Near causes checked and ruled out:**
+- *Our own diagnostics*: every command run during the investigation was read-only
+  (`md5sum`/`grep`/`ls`/`cat`/`find`/`ps`/`tail`/`mount`/`findmnt`/`stat`); all throwaway
+  containers used `--rm`, which only removes that container's own record on exit. **Cannot be
+  fully ruled out as a trigger**, though: the investigation's own `ls -lt`/`grep -rl` scan read
+  every container directory including `secretsman-smoketest`'s, seconds before it vanished — if
+  dockerd/containerd reconciles-on-touch for a directory it can't map to a live record, that scan
+  is a plausible proximate trigger even though it issued no delete itself.
+- *Scheduled tasks*: root's crontab is stock (hourly/daily/weekly/monthly `run-parts` only).
+  `ca.mover.tuning` runs monthly (`0 0 1 * *`, not this day) and only invokes `mover start`
+  (cache↔array moves, not the docker store). `appdata.cleanup.plus` targets `/mnt/user/appdata/*`
+  by design, a different tree from `/var/lib/docker/containers`. The only User Script that
+  touches docker at all, `delete_dangling_images` (`docker rmi` on dangling *images*, not
+  containers), is scheduled **disabled**. `butler-proxynet-autoconnect` (runs on boot) only
+  watches `docker events` for `terrible-butler` starts and does a network connect — unrelated.
+  Nothing scheduled on this host touches the container store.
+- *dockerd/containerd auto-prune of unreconcilable metadata*: plausible and not yet ruled out —
+  this is the leading hypothesis (the four nil-RWLayer containers are exactly the population that
+  would hit such a path) but hasn't been confirmed, since `--log-level=fatal` hides it and
+  `auditctl` isn't available on this host (Unraid's stock kernel doesn't ship the Linux audit
+  subsystem enabled here) for PID-level attribution without installing new host packages, which
+  hasn't been done pending explicit go-ahead.
+
+**Live monitoring in place:** a standalone container, `secretsman-fswatch` (plain alpine +
+inotify-tools, **not** privileged, **not** `--pid=host` — just a read-only bind mount of
+`/var/lib/docker/containers` plus a writable log destination), runs `inotifywait -m -r` for
+`delete,moved_from,delete_self,attrib,create` across the whole tree, logging timestamped events
+to `/mnt/user/appdata/claude-code/config/secretsman-fswatch.log`. Restart policy
+`unless-stopped`. It gives **what happened, when, and to which path** — not which process, since
+that needs the audit subsystem this host doesn't have installed. Check that log file first
+before anything else next session.
+
+**Evidence preserved, do not touch:** ESPHome, Immich-Kiosk, Overseerr, and Lidarr are left
+exactly as the reboot left them (not restarted, not recreated, not removed) — they're the only
+surviving evidence of the nil-RWLayer side of this. `secretsman-smoketest`'s own evidence is
+already gone; nothing to preserve there.
+
+**What resuming Phase 2 requires:** this investigation to reach a real conclusion (ideally
+catching the `secretsman-fswatch` log recording another disappearance, or a deliberate decision
+to install `auditd` for PID attribution), not just "it hasn't happened again since."
+
+---
+
+## Superseded below — round-3 install completion detail (still accurate, kept for reference)
 
 Since the round-2 update further down, the `.plg` install bug was found, fixed, and the full
 install completed successfully end-to-end on the live host. **This is genuinely ready for you
