@@ -1,6 +1,20 @@
-# Phase 2 resume brief — PAUSED: the repopulation-ordering design is broken, not just unproven
+# Phase 2 resume brief — HISTORICAL: !secretfile was removed, this whole incident is now moot
 
-## CORRECTION (2026-08-25, third Gate-2 reboot) — read this first, it overrides earlier sections
+## FINAL DECISION (2026-08-25) — !secretfile removed, not redesigned; read this, not the plan below
+
+Everything in this file below this section documents a real incident (the repopulation-ordering
+guarantee breaking live, and the redesign drafted in response) — kept for the reasoning, not as
+a live plan. The actual outcome was narrower and simpler than the redesign it proposed:
+**`!secretfile` was removed from the resolver entirely**, on the grounds that its only marginal
+benefit over `!secret` (hiding a value from `docker inspect`/`/proc/<pid>/environ`) protects
+against an attacker who already has host access the store is equally readable with — not worth
+a second patched stock file, a second checksum, and a boot-ordering dependency that had just
+been disproven once. See CLAUDE.md's "CORRECTION" section for the permanent record and
+`README.md`'s SECURITY section for what ships instead. The "Redesign plan" section immediately
+below was never built and should not be picked up — Phase 2 is otherwise unaffected (patch
+layer, boot re-patch, and `!secret` are all proven and untouched by this).
+
+## CORRECTION (2026-08-25, third Gate-2 reboot) — the incident that led to the decision above
 
 **The `disks_mounted`-before-`docker_started` guarantee is DISPROVEN, not merely untested.**
 Phase 0 established it by reading `emhttp_event`'s and `rc.docker`'s source (see CLAUDE.md
@@ -34,52 +48,15 @@ been **applied live** (`--log-level=fatal` → `--log-level=info` at `/etc/rc.d/
 ahead of the next boot, so it's in place when the redesign below is tested. It is a stock file
 restored from the OS image every boot, so this is a one-boot-only change unless re-applied.
 
-### Redesign plan (proposed, NOT implemented — this is the next work, not done)
+### Redesign plan (drafted, NEVER built, superseded by the removal decision above)
 
-**1. Replace the `disks_mounted` event hook with a synchronous call inside `rc.docker` itself.**
-Cross-process/cross-daemon event ordering (`emhttpd`'s dispatch of `disks_mounted` before
-`docker_started`) is exactly the assumption that just broke, and it's unfalsifiable after the
-fact because nothing logs it. A same-script, same-shell call has no such gap: patch `rc.docker`
-(same checksum-guarded, marker-delimited, per-version-hash-gated mechanism already used for
-`Helpers.php` — rule 4) to invoke `scripts/repopulate.php` synchronously, in the `start)` case,
-*before* the autostart loop reaches `container_paths_exist()`/`docker start` for any container.
-This makes "repopulation happens before autostart" true by construction (sequential execution
-in one script) rather than an inference about daemon event order. The store's own availability
-at that point (i.e., is `/mnt/user` mounted yet) becomes the only remaining assumption, and it's
-directly checkable in the same way `repopulate.php` already checks the store today —
-`secretsman_load_store()` throwing is already a fail-closed, already-handled path (systemic
-notification, all `!secretfile` candidates held back), so this isn't a new gap, just a smaller
-and more directly verifiable one than the ordering assumption it replaces.
-Proposal: drop the `disks_mounted` event registration entirely rather than keep both — it
-provided no verifiable benefit this round and keeping an unverifiable second mechanism around
-just re-creates the "can't tell if it fired" problem it's meant to solve. Open to being
-overruled on this if there's a reason to want defense-in-depth here.
-
-**2. Make repopulation log its own execution, durably, unconditionally.** Every invocation
-(success, partial failure, or PHP fatal) writes through `logger -t secretsman-repopulate` (lands
-in `/var/log/syslog`, already mirrored to flash) — candidates found, per-key
-success/failure, and a clear "completed" line. A crash before that point is itself informative
-(the last logged step tells you where it died) — this directly answers the visibility gap: next
-time, "did it fire" stops being an inference.
-
-**3. Fix `container_paths_exist()` to verify type, not just existence, for `!secretfile`
-sources.** Same `rc.docker` patch as (1): for any bind-mount source under
-`$runtimeRoot/files/` (i.e., a secretsman-managed path — identifiable by the path prefix, not
-by trusting metadata Docker itself controls), additionally require: is a regular file (not a
-directory, not a symlink), non-empty, mode exactly `0400`. Any failure is treated as "does not
-exist" for the purposes of the existing hold-back behavior — no new blocking mechanism, just a
-correct definition of "exists" fed into the one that's already there. This specifically closes
-the observed failure: Docker's auto-vivified directory now fails the check and the container is
-never `docker start`-ed at all, instead of being started straight into an OCI failure.
-Content-hash verification was considered and rejected as unnecessary — a regular-file-with-mode
-check is already sufficient to distinguish "repopulated" from "Docker's auto-vivified stand-in,"
-which is the only failure mode observed or anticipated.
-
-**Cost of this design, stated plainly:** it widens the patch layer from one stock file
-(`Helpers.php`) to two (`rc.docker`), which is a real increase in surface area and risk versus
-Phase 0's "single insertion point" property. Per CLAUDE.md rule 7, **this requires the
-`RECOVERY.md` drill to be re-run and confirmed working before it ships**, in addition to (not
-instead of) the existing `Helpers.php` drill.
+This was the plan on the table before the removal decision: fold `repopulate.php` into a
+synchronous, checksum-guarded `rc.docker` patch (replacing the disproven `disks_mounted` event
+hook with same-script sequencing), make repopulation log its own execution unconditionally, and
+replace `container_paths_exist()`'s bare existence check with a type/mode check. All correct as
+far as it went, and rejected anyway: it would have widened the patch layer from one stock file
+to two, permanently, to protect against an attacker who can already read the store directly.
+Kept here only so the reasoning that led to removal instead is visible — do not implement this.
 
 ---
 

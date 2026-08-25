@@ -95,10 +95,22 @@ not type — Docker's auto-vivification of a missing bind source as a directory 
 structurally. Deferring `!secretfile`'s fail-closed property to this native check was a Phase 2
 design decision, and it was wrong.
 
-**Net effect: `!secretfile` on an autostarting container is currently UNSAFE** — it cannot
-guarantee repopulation-before-autostart, and a missing/wrong-type source is not reliably held
-back. This must be stated plainly in `README.md`'s SECURITY section. `!secret` (env-file,
-resolved at container-create time in the GUI, not at boot) is unaffected.
+**Net effect: `!secretfile` on an autostarting container was UNSAFE** — it could not guarantee
+repopulation-before-autostart, and a missing/wrong-type source was not reliably held back.
+
+**Consequence, decided the same day: `!secretfile` was removed entirely, not redesigned.** A
+redesign was drafted (fold repopulation into a synchronous, checksum-guarded `rc.docker` patch,
+plus a type/mode check replacing the bare `container_paths_exist()` existence check) but never
+built. On reflection, `!secretfile`'s only marginal benefit over `!secret` — hiding a value from
+`docker inspect`/`/proc/<pid>/environ` — protects against an attacker who already has root or
+docker-socket access to the host, at which point `store.json` is directly readable anyway. That
+benefit wasn't worth a second patched stock file, a second checksum to carry through every
+future Unraid release, and a boot-ordering dependency that had just been disproven once already.
+`secretsman_parse_token()` now recognises `!secretfile` only to abort with a message pointing at
+`!secret`. **If you're reading this section wondering whether to re-add file mode: re-read this
+paragraph first, and the cost/benefit hasn't changed unless the threat model has.** `!secret`
+(env-file, resolved at container-create time in the GUI, not at boot) is unaffected by any of
+this.
 
 ## Array-start hook (Phase 2a recon, 2026-08-25, read-only against the live host) — SUPERSEDED, see correction above
 
@@ -213,16 +225,17 @@ same way a real boot would. See `docs/phase2-resume.md` for the full incident.
   the store location happen in this phase.
 - **Phase 2 — Patch layer + `.plg` (in progress, this repo).**
   `src/patch.php`: the checksum-guarded, idempotent, marker-delimited injection/reversion at the
-  confirmed insertion point (`secretsman_patch_apply`/`_revert`/`_verify`/`_apply_to_file`).
+  confirmed insertion point (`secretsman_patch_apply`/`_revert`/`_verify`/`_apply_to_file`). The
+  injected text is just a guarded `require_once` plus `secretsman_resolve($xml, $xml['Name']);`
+  — mode-agnostic, so removing `!secretfile` (see the correction above) changed zero bytes of it.
   `plugin/`: the installed-plugin tree — `scripts/apply_patch.php` (boot-time patch, per-version
-  hash lookup from bundled `reference/`), `scripts/repopulate.php` (the `disks_mounted` hook
-  logic above), `scripts/force_start.php` (the recovery override, see `RECOVERY.md`),
-  `scripts/uninstall.php` (clean revert on Remove), `event/disks_mounted` (the registration
-  file itself). `tests/harness/`: the staging harness (`render_cmd.php` + `regression.php`) that
-  proved stock vs. patched byte-identical output across every real template on the recon host
-  (48/48) plus a token-bearing fixture leaking nothing into `$cmd` — see the harness's own
-  header comments for why it bootstraps `xmlToCommand()`'s dependencies manually rather than
-  reusing the full webGui HTTP-request chain. `unraid-secretsman.plg` and
+  hash lookup from bundled `reference/`), `scripts/uninstall.php` (clean revert on Remove). There
+  is no `event/` directory and no boot-time repopulation script — those existed only for
+  `!secretfile` and were deleted with it. `tests/harness/`: the staging harness (`render_cmd.php`
+  + `regression.php`) that proved stock vs. patched byte-identical output across every real
+  template on the recon host (48/48) plus a token-bearing fixture leaking nothing into `$cmd` —
+  see the harness's own header comments for why it bootstraps `xmlToCommand()`'s dependencies
+  manually rather than reusing the full webGui HTTP-request chain. `unraid-secretsman.plg` and
   `scripts/build-plugin.sh`: the installable artifact and its packaging step — **not yet
   released**; publishing a real GitHub Release is deliberately deferred until the live-system
   verification steps (applying to the real `Helpers.php`, then a real reboot) succeed. Shipping
@@ -238,13 +251,12 @@ same way a real boot would. See `docs/phase2-resume.md` for the full incident.
   the sentinel value from a fixture store appears nowhere in the returned `$cmd`. This runs
   against the patched function's real return value on the real host, not a mock of it.
   **Clean removal / revert-to-stock is UNVERIFIED and deliberately DEFERRED, not skipped.**
-  `Helpers.php` patching, boot-time re-patch, and `!secretfile` repopulation timing have all
-  been proven live on the real host (see `docs/phase2-resume.md`) — but the `.plg`'s
-  `Method="remove"` block and `scripts/uninstall.php` have never once been run against the live
-  install, because the plugin works and stays installed. Do not assume that path works just
-  because the install path does; it needs the same real-mechanism verification (clean slate,
-  actual `plugin remove`, confirm stock hash returns) before it can be trusted, whenever there's
-  an actual reason to remove it.
+  `Helpers.php` patching and boot-time re-patch have both been proven live on the real host (see
+  `docs/phase2-resume.md`) — but the `.plg`'s `Method="remove"` block and `scripts/uninstall.php`
+  have never once been run against the live install, because the plugin works and stays
+  installed. Do not assume that path works just because the install path does; it needs the same
+  real-mechanism verification (clean slate, actual `plugin remove`, confirm stock hash returns)
+  before it can be trusted, whenever there's an actual reason to remove it.
 - **Phase 3 (not yet scoped) — GUI page** for managing the store (add/edit/remove secrets)
   without hand-editing `store.json` over SSH.
 

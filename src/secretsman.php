@@ -26,7 +26,9 @@ final class SecretsmanError extends \RuntimeException
  *   - 'none'    not secrets syntax at all; caller leaves the value alone.
  *   - 'literal' escaped ("\!secret ..."); caller uses ['value'], never
  *               resolved.
- *   - 'token'   a well-formed "!secret ns/key" or "!secretfile ns/key".
+ *   - 'token'   a well-formed "!secret ns/key". ("!secretfile ns/key" is
+ *               recognised too, only so it can throw a clear removal
+ *               error below — it is no longer a live mode.)
  *
  * Anything that merely *looks* like an attempt at the syntax (contains
  * "!secret" but isn't exactly one of the two valid whole-field forms —
@@ -54,13 +56,22 @@ function secretsman_parse_token(string $rawValue): array
     if (!preg_match('/^!(secretfile|secret)\s+([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/', $value, $m)) {
         throw new SecretsmanError(
             "secretsman: malformed or misplaced secret token — a field value must be " .
-            "exactly '!secret ns/key' or '!secretfile ns/key' with no other text"
+            "exactly '!secret ns/key' with no other text"
+        );
+    }
+
+    if ($m[1] === 'secretfile') {
+        throw new SecretsmanError(
+            "secretsman: !secretfile was removed (see CLAUDE.md) — its only benefit over " .
+            "!secret was hiding a value from docker inspect/proc-environ, which already " .
+            "requires host access the store is equally readable with. Use '!secret " .
+            "{$m[2]}/{$m[3]}' instead."
         );
     }
 
     return [
         'kind' => 'token',
-        'mode' => $m[1] === 'secretfile' ? 'file' : 'env',
+        'mode' => 'env',
         'ns'   => $m[2],
         'key'  => $m[3],
     ];
@@ -131,8 +142,14 @@ function secretsman_lookup(array $store, string $ns, string $key): string
     return $store[$ns][$key];
 }
 
-/** Atomic write of $value to $path, 0400, creating parent dirs as needed. */
-function secretsman_write_secret_file(string $path, string $value): void
+/**
+ * Atomic write of $value to $path, 0400, creating parent dirs as needed.
+ * Despite the file-shaped name this is NOT a !secretfile remnant — it's the
+ * only writer of the !secret env-file (secretsman_resolve()'s $envLines
+ * branch below). Named for what it does (write a protected file), not for
+ * which removed mode used to call it too.
+ */
+function secretsman_write_protected_file(string $path, string $value): void
 {
     $dir = dirname($path);
     if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
@@ -150,11 +167,7 @@ function secretsman_write_secret_file(string $path, string $value): void
     }
 }
 
-/**
- * Delete stale env-files. Never touches files/ — a !secretfile bind-mount
- * source must live as long as its container, which the caller (the Phase 2
- * boot hook, repopulating before docker autostart) is responsible for.
- */
+/** Delete stale env-files older than $maxAgeSeconds. */
 function secretsman_sweep_env_dir(string $envDir, int $maxAgeSeconds = 300): void
 {
     if (!is_dir($envDir)) {
@@ -169,13 +182,7 @@ function secretsman_sweep_env_dir(string $envDir, int $maxAgeSeconds = 300): voi
     }
 }
 
-/**
- * The filesystem-safe form of a container name used for every runtime
- * path under $runtime_root. Exposed (not inlined) because the boot-time
- * !secretfile repopulation script (scripts/repopulate.php) has to compute
- * the exact same host path independently, from a container's saved
- * template, before secretsman_resolve() ever runs again for it.
- */
+/** The filesystem-safe form of a container name, used for its env-file basename. */
 function secretsman_safe_name(string $containerName): string
 {
     $safe = preg_replace('/[^A-Za-z0-9_.-]/', '_', $containerName);
@@ -183,8 +190,10 @@ function secretsman_safe_name(string $containerName): string
 }
 
 /**
- * Resolve every !secret / !secretfile token in $xml['Config'], mutating
- * $xml in place. Tokens are only permitted in Variable-type fields; a
+ * Resolve every !secret token in $xml['Config'], mutating $xml in place.
+ * (A !secretfile token is recognised only to abort with a message pointing
+ * at !secret — see secretsman_parse_token().) Tokens are only permitted in
+ * Variable-type fields; a
  * token anywhere else (Path, Port, Label, Device) aborts, naming the
  * field. A token in ExtraParams or PostArgs (free-text fields, not Config
  * entries) also aborts explicitly, since those are echoed into $cmd raw.
@@ -206,8 +215,7 @@ function secretsman_resolve(array &$xml, string $containerName, array $opts = []
     $runtimeRoot = $opts['runtime_root'] ?? (getenv('SECRETSMAN_RUNTIME_ROOT') ?: '/run/secretsman');
     $safeName    = secretsman_safe_name($containerName);
 
-    $envDir  = $runtimeRoot . '/env';
-    $fileDir = $runtimeRoot . '/files/' . $safeName;
+    $envDir = $runtimeRoot . '/env';
 
     secretsman_sweep_env_dir($envDir);
 
@@ -260,41 +268,17 @@ function secretsman_resolve(array &$xml, string $containerName, array $opts = []
         }
         $value = secretsman_lookup($store, $parsed['ns'], $parsed['key']);
 
-        if ($parsed['mode'] === 'env') {
-            $envLines[] = $config['Target'] . '=' . $value;
-            // Entry dropped entirely: no -e is emitted for it at all.
-            continue;
-        }
-
-        // mode === 'file'
-        $containerPath = '/run/secrets/' . $parsed['key'];
-        $hostPath      = $fileDir . '/' . $parsed['key'];
-        secretsman_write_secret_file($hostPath, $value);
-
-        $config['Value']   = $containerPath;
-        $config['Default'] = $containerPath;
-        $config['Target']  = $config['Target'] . '_FILE';
-        $newConfig[] = $config;
-
-        $newConfig[] = [
-            'Name'        => 'secretsman-' . $parsed['key'],
-            'Target'      => $containerPath,
-            'Default'     => $hostPath,
-            'Value'       => $hostPath,
-            'Mode'        => 'ro',
-            'Description' => 'secretsman: materialised secret file',
-            'Type'        => 'Path',
-            'Display'     => 'always',
-            'Required'    => 'true',
-            'Mask'        => 'false',
-        ];
+        // mode is always 'env' now — a 'file' token already threw in
+        // secretsman_parse_token() above.
+        $envLines[] = $config['Target'] . '=' . $value;
+        // Entry dropped entirely: no -e is emitted for it at all.
     }
 
     $xml['Config'] = $newConfig;
 
     if ($envLines) {
         $envPath = $envDir . '/' . $safeName . '.env';
-        secretsman_write_secret_file($envPath, implode("\n", $envLines) . "\n");
+        secretsman_write_protected_file($envPath, implode("\n", $envLines) . "\n");
         $xml['ExtraParams'] = rtrim((string)($xml['ExtraParams'] ?? ''))
             . ' --env-file=' . escapeshellarg($envPath);
     }

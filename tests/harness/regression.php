@@ -138,7 +138,7 @@ if ($fixtureResult['code'] !== 0) {
     $fixtureOk = false;
     fwrite(STDERR, "FAIL  token-bearing fixture: patched render errored: {$fixtureResult['stderr']}\n");
 } else {
-    $sentinels = ['HARNESS-SENTINEL-ENV-VALUE-NOT-A-REAL-SECRET', 'HARNESS-SENTINEL-FILE-VALUE-NOT-A-REAL-SECRET'];
+    $sentinels = ['HARNESS-SENTINEL-ENV-VALUE-NOT-A-REAL-SECRET'];
     foreach ($sentinels as $sentinel) {
         if (str_contains($fixtureResult['stdout'], $sentinel)) {
             $fixtureOk = false;

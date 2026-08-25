@@ -31,15 +31,13 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 
 echo "Building $NAME-$VERSION.txz ..."
 
-mkdir -p "$PKG_DIR"/{src,scripts,event,reference}
+mkdir -p "$PKG_DIR"/{src,scripts,reference}
 
 # Resolve the repo's src/ <-> plugin/src symlink into real files in the
 # package — a .txz has no business shipping symlinks that only make sense
 # inside this git checkout.
 cp "$REPO_ROOT"/src/*.php "$PKG_DIR/src/"
 cp "$REPO_ROOT"/plugin/scripts/*.php "$PKG_DIR/scripts/"
-cp "$REPO_ROOT"/plugin/event/disks_mounted "$PKG_DIR/event/"
-chmod +x "$PKG_DIR/event/disks_mounted"
 cp -r "$REPO_ROOT"/reference/. "$PKG_DIR/reference/"
 
 mkdir -p "$OUT_DIR"

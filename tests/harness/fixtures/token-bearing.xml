@@ -16,6 +16,5 @@
   <ExtraParams></ExtraParams>
   <DateInstalled></DateInstalled>
   <Config Name="Env Token" Target="FIXTURE_ENV_VAR" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">!secret secretsman-harness/fixture-env-key</Config>
-  <Config Name="File Token" Target="FIXTURE_FILE_VAR" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">!secretfile secretsman-harness/fixture-file-key</Config>
   <Config Name="Plain Variable" Target="FIXTURE_PLAIN" Default="unchanged" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false"></Config>
 </Container>

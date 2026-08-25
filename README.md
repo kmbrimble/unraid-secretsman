@@ -22,7 +22,8 @@ to forget a value is sitting in there unredacted until after you've hit send.
 With this plugin, both artefacts stay clean by construction: the template XML holds only
 `!secret ns/key`, and the command the GUI displays holds only
 `--env-file=/run/secretsman/env/<container>.env`. There is nothing to redact because the secret
-was never in either string. That's the primary reason this exists.
+was never in either string. That's the only thing this plugin does, and it's the reason it
+exists — see SECURITY below for exactly what that does and doesn't cover.
 
 **Limit, stated plainly:** this covers the template and the displayed command — the two
 artefacts people actually paste around. It does not, and cannot, stop you from copying a value
@@ -42,21 +43,15 @@ Store your secrets once, outside flash, and reference them from a template field
 !secret terriblebutler/anthropic_api_key
 ```
 
-or, for tools that support reading a secret from a file (the `_FILE` / `FILE__` convention):
-
-```
-!secretfile terriblebutler/anthropic_api_key
-```
-
 At container-create time, the plugin resolves the token against a central store and rewrites
 the docker command so the template XML — and therefore your flash backup — only ever contains
-the token, never the value.
+the token, never the value. The value is written to a `root:root 0400` env-file on tmpfs and the
+variable is replaced with a single `--env-file=` reference; the template XML never sees the
+value.
 
-- **`!secret`**: the value is written to a `root:root 0400` file on tmpfs and the variable is
-  replaced with a single `--env-file=` reference. The template XML never sees the value.
-- **`!secretfile`**: the value is written to a `root:root 0400` file on tmpfs, a read-only bind
-  mount is added, and the variable is rewritten to `<VAR>_FILE=/run/secrets/<key>` for apps that
-  support that convention.
+There is no file-based mode. An earlier `!secretfile` variant (bind-mounting the secret as a
+file, for apps that read from `_FILE`/`FILE__` paths instead of environment variables) was
+removed — see SECURITY below for why.
 
 ## Install
 
@@ -82,33 +77,22 @@ access on the host:**
 - `/proc/<pid>/environ`
 
 `!secret` resolves to a real environment variable inside the container, so it's visible through
-either of those. This is a smaller marginal exposure than it looks: anyone who can read
-`docker inspect` output or `/proc/<pid>/environ` already has root or docker-group access to the
-Unraid host — and with that access, they can simply read `store.json` directly. The plugin isn't
-leaving a hole next to a locked door; it's declining to also guard a door that access already
-opens.
+either of those. **This is deliberate, not an oversight** — anyone who can read `docker inspect`
+output or `/proc/<pid>/environ` already has root or docker-socket access to the Unraid host, and
+with that access they can simply read `store.json` directly. The plugin isn't leaving a hole next
+to a locked door; it closes the exposures that *leave* the host (flash backups, a template pasted
+into an issue or a chat, a command echoed to the GUI) and makes no attempt to guard on-host
+inspection, because that access already opens every other door too.
 
-**Why an env-var secret can't be hidden from `docker inspect` without the app's cooperation:**
-something inside the container has to read the file and hand the value to the application, and
-if that something is a wrapper script that re-exports it as an environment variable, the value
-reappears in `/proc/<pid>/environ` for whatever process it hands off to. An entrypoint shim
-*moves* the exposure from `docker inspect` to `/proc`; it doesn't remove it. The only way to
-actually avoid this is for the application itself to read the secret from a file and never turn
-it into an environment variable — which is exactly the `_FILE` / `FILE__` convention.
+An earlier `!secretfile` mode hid the value from `docker inspect`/`/proc/<pid>/environ` as well,
+by writing it to a file the container bind-mounted instead of an environment variable. It was
+removed (2026-08-25): the marginal protection it bought was against an attacker who could already
+read the store directly, and the cost of keeping it turned out to be real — its tmpfs bind-mount
+source had to be rewritten on every boot before Docker autostarted the container, and a live test
+disproved the boot-ordering guarantee that depended on. See `CLAUDE.md`'s dated correction and
+`docs/phase2-resume.md` for the incident. `!secret` is unaffected by any of this — it always
+resolved at container-create time in the GUI, never at boot.
 
-- **`!secretfile` is the hardened path**, for exactly that reason. The value never becomes an
-  environment variable at all — only a file path does — so it closes both categories above:
-  `docker inspect` and `/proc/<pid>/environ` never see it either. Use it for anything that
-  supports the `_FILE` convention.
-- **`!secretfile` on an autostarting container is currently UNSAFE — do not rely on it yet.**
-  Its bind-mount source lives on tmpfs and has to be rewritten on every boot, before Docker
-  autostarts the container, and a live test (2026-08-25) showed this repopulation is **not
-  currently guaranteed to finish first**: Docker can auto-create the missing path as an empty
-  directory and start the container against it, which fails instead of being safely held back.
-  This is a real, open design gap, not a hedge — see `CLAUDE.md`'s correction note and
-  `docs/phase2-resume.md` for the incident and the fix in progress. Until it's resolved, only use
-  `!secretfile` on containers you start manually after confirming the secret file is in place.
-  `!secret` (resolved once, at container-create time in the GUI) is not affected by this gap.
 - **This plugin patches OS files.** It surgically modifies
   `/usr/local/emhttp/plugins/dynamix.docker.manager/include/Helpers.php`, a stock Unraid file
   that is restored from the OS image on every boot, which is why the patch has to reapply at

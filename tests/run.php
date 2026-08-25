@@ -8,8 +8,6 @@ require __DIR__ . '/../src/secretsman.php';
 require __DIR__ . '/../src/patch.php';
 require __DIR__ . '/../plugin/scripts/common.php';
 require __DIR__ . '/../plugin/scripts/apply_patch.php';
-require __DIR__ . '/../plugin/scripts/repopulate.php';
-require __DIR__ . '/../plugin/scripts/force_start.php';
 require __DIR__ . '/../plugin/scripts/uninstall.php';
 
 $failures = [];
@@ -105,12 +103,19 @@ t('parse: valid !secret', function () {
     assert_eq('anthropic_api_key', $p['key']);
 });
 
-t('parse: valid !secretfile', function () {
-    $p = secretsman_parse_token('!secretfile media/plex_token');
-    assert_eq('token', $p['kind']);
-    assert_eq('file', $p['mode']);
-    assert_eq('media', $p['ns']);
-    assert_eq('plex_token', $p['key']);
+t('parse: !secretfile aborts — mode removed, points at !secret', function () {
+    assert_throws(
+        fn() => secretsman_parse_token('!secretfile media/plex_token'),
+        SecretsmanError::class,
+        '!secretfile'
+    );
+    // and it names the replacement, not just the removal
+    try {
+        secretsman_parse_token('!secretfile media/plex_token');
+        throw new \Exception('expected failure');
+    } catch (SecretsmanError $e) {
+        assert_true(strpos($e->getMessage(), '!secret') !== false, 'error should point at !secret');
+    }
 });
 
 t('parse: leading/trailing whitespace tolerated', function () {
@@ -126,7 +131,7 @@ t('parse: escaped literal strips one backslash, not resolved', function () {
     assert_eq('!secret ns/key', $p['value']);
 });
 
-t('parse: escaped secretfile literal', function () {
+t('parse: escaped secretfile spelling is still just literal text (mode is gone, escaping still works)', function () {
     $p = secretsman_parse_token('\\!secretfile ns/key');
     assert_eq('literal', $p['kind']);
     assert_eq('!secretfile ns/key', $p['value']);
@@ -342,6 +347,17 @@ t('scope: token in PostArgs aborts', function () {
     );
 });
 
+t('scope: a !secretfile token aborts the whole resolve, not just the parser', function () {
+    $dir = scratch_dir();
+    $storePath = write_store($dir, ['ns' => ['k' => 'test-value-not-a-real-secret']]);
+    $xml = ['Config' => [variable_config('MY_TOKEN', '!secretfile ns/k')], 'ExtraParams' => ''];
+    assert_throws(
+        fn() => secretsman_resolve($xml, 'testctr', ['store_path' => $storePath, 'runtime_root' => $dir . '/run']),
+        SecretsmanError::class,
+        '!secretfile'
+    );
+});
+
 t('scope: a Variable token resolves without error', function () {
     $dir = scratch_dir();
     $storePath = write_store($dir, ['ns' => ['k' => 'test-value-not-a-real-secret']]);
@@ -375,49 +391,10 @@ t('materialise: the resolved env entry is removed from Config, no -e emitted', f
     assert_eq(0, count($xml['Config']));
 });
 
-t('materialise: secretfile writes a 0400 file and rewrites the Variable to _FILE', function () {
-    $dir = scratch_dir();
-    $storePath = write_store($dir, ['ns' => ['k' => 'test-value-not-a-real-secret']]);
-    $xml = ['Config' => [variable_config('MY_TOKEN', '!secretfile ns/k')], 'ExtraParams' => ''];
-    secretsman_resolve($xml, 'testctr', ['store_path' => $storePath, 'runtime_root' => $dir . '/run']);
-
-    assert_eq(2, count($xml['Config']));
-    $varEntry = $xml['Config'][0];
-    assert_eq('MY_TOKEN_FILE', $varEntry['Target']);
-    assert_eq('/run/secrets/k', $varEntry['Value']);
-
-    $pathEntry = $xml['Config'][1];
-    assert_eq('Path', $pathEntry['Type']);
-    assert_eq('/run/secrets/k', $pathEntry['Target']);
-    assert_eq('ro', $pathEntry['Mode']);
-    assert_true(is_file($pathEntry['Value']));
-    assert_eq('test-value-not-a-real-secret', file_get_contents($pathEntry['Value']));
-    assert_eq('0400', substr(sprintf('%o', fileperms($pathEntry['Value'])), -4));
-});
-
-t('materialise: re-running resolve() is idempotent (reboot-repopulate case)', function () {
-    $dir = scratch_dir();
-    $storePath = write_store($dir, ['ns' => ['k' => 'test-value-not-a-real-secret']]);
-    $opts = ['store_path' => $storePath, 'runtime_root' => $dir . '/run'];
-
-    $xml1 = ['Config' => [variable_config('MY_TOKEN', '!secretfile ns/k')], 'ExtraParams' => ''];
-    secretsman_resolve($xml1, 'testctr', $opts);
-    $path1 = $xml1['Config'][1]['Value'];
-
-    $xml2 = ['Config' => [variable_config('MY_TOKEN', '!secretfile ns/k')], 'ExtraParams' => ''];
-    secretsman_resolve($xml2, 'testctr', $opts);
-    $path2 = $xml2['Config'][1]['Value'];
-
-    assert_eq($path1, $path2);
-    assert_eq('test-value-not-a-real-secret', file_get_contents($path2));
-});
-
-t('materialise: sweeper deletes stale env files, never touches files/', function () {
+t('materialise: sweeper deletes stale env files, leaves fresh ones alone', function () {
     $dir = scratch_dir();
     $envDir = $dir . '/run/env';
-    $fileDir = $dir . '/run/files/keep-me';
     mkdir($envDir, 0700, true);
-    mkdir($fileDir, 0700, true);
 
     $stale = $envDir . '/old.env';
     file_put_contents($stale, 'X=y');
@@ -428,31 +405,24 @@ t('materialise: sweeper deletes stale env files, never touches files/', function
     file_put_contents($fresh, 'X=y');
     chmod($fresh, 0400);
 
-    $secretFile = $fileDir . '/k';
-    file_put_contents($secretFile, 'test-value-not-a-real-secret');
-    chmod($secretFile, 0400);
-    touch($secretFile, time() - 3600);
-
     secretsman_sweep_env_dir($envDir, 300);
 
     assert_true(!is_file($stale), 'stale env file should be swept');
     assert_true(is_file($fresh), 'fresh env file should survive');
-    assert_true(is_file($secretFile), 'files/ is never swept');
 });
 
 // ---------------------------------------------------------------------------
 // End-to-end resolve()
 // ---------------------------------------------------------------------------
 
-t('resolve: mixed template - env token, file token, plain, escaped literal', function () {
+t('resolve: mixed template - env token, plain, escaped literal', function () {
     $dir = scratch_dir();
     $storePath = write_store($dir, [
-        'ns' => ['a' => 'test-value-not-a-real-secret', 'b' => 'test-file-secret-value'],
+        'ns' => ['a' => 'test-value-not-a-real-secret'],
     ]);
     $xml = [
         'Config' => [
             variable_config('ENV_VAR', '!secret ns/a'),
-            variable_config('FILE_VAR', '!secretfile ns/b'),
             variable_config('PLAIN', 'unchanged'),
             variable_config('ESCAPED', '\\!secret ns/a'),
         ],
@@ -460,12 +430,11 @@ t('resolve: mixed template - env token, file token, plain, escaped literal', fun
     ];
     secretsman_resolve($xml, 'mixedctr', ['store_path' => $storePath, 'runtime_root' => $dir . '/run']);
 
-    // env token entry dropped, file token entry rewritten + volume appended,
-    // plain and escaped-literal entries survive untouched (bar unescaping).
-    assert_eq(4, count($xml['Config'])); // PLAIN, ESCAPED, FILE_VAR renamed, +1 Path
+    // env token entry dropped, plain and escaped-literal entries survive
+    // untouched (bar unescaping).
+    assert_eq(2, count($xml['Config'])); // PLAIN, ESCAPED
     $targets = array_column($xml['Config'], 'Target');
     assert_true(!in_array('ENV_VAR', $targets, true));
-    assert_true(in_array('FILE_VAR_FILE', $targets, true));
     assert_true(in_array('PLAIN', $targets, true));
     assert_true(in_array('ESCAPED', $targets, true));
 
@@ -553,11 +522,11 @@ t('never-log: a scope-violation error never contains the sentinel', function () 
     }
 });
 
-t('never-log: a successful resolve never puts the sentinel in $cmd-facing output ($xml itself only holds a path)', function () {
+t('never-log: a successful resolve never puts the sentinel in $cmd-facing output ($xml only ever holds an --env-file path)', function () {
     $dir = scratch_dir();
     $sentinel = 'SUPER-SECRET-SENTINEL-VALUE';
     $storePath = write_store($dir, ['ns' => ['k' => $sentinel]]);
-    $xml = ['Config' => [variable_config('V', '!secretfile ns/k')], 'ExtraParams' => ''];
+    $xml = ['Config' => [variable_config('V', '!secret ns/k')], 'ExtraParams' => ''];
     secretsman_resolve($xml, 'ctr', ['store_path' => $storePath, 'runtime_root' => $dir . '/run']);
     $serialized = json_encode($xml);
     assert_true(strpos($serialized, $sentinel) === false, 'sentinel leaked into resolved $xml');
@@ -764,88 +733,12 @@ t('plg: the packaged .txz extracts to the real absolute install path, not a bare
 // ---------------------------------------------------------------------------
 // Plugin scripts (plugin/scripts/) — Phase 2
 // ---------------------------------------------------------------------------
-// apply_patch_main()/repopulate_main()/force_start_main() themselves hit
-// hardcoded Unraid system paths by design (the live Helpers.php, /var/lib
-// /docker/unraid-autostart, /boot/config/plugins/dockerMan/templates-user)
-// and are validated end-to-end by tests/harness/ against the live host,
-// not here. What's tested here is every pure/parameterized piece they're
-// built from.
-
-function fixture_template_xml(array $configEntries): string
-{
-    $xml = "<?xml version=\"1.0\"?>\n<Container version=\"2\">\n  <Name>fixture</Name>\n";
-    foreach ($configEntries as $c) {
-        $xml .= sprintf(
-            "  <Config Name=\"%s\" Target=\"%s\" Default=\"%s\" Mode=\"\" Type=\"%s\">%s</Config>\n",
-            htmlspecialchars($c['name'] ?? 'x'),
-            htmlspecialchars($c['target'] ?? 'X'),
-            htmlspecialchars($c['default'] ?? ''),
-            htmlspecialchars($c['type'] ?? 'Variable'),
-            htmlspecialchars($c['value'] ?? '')
-        );
-    }
-    $xml .= "</Container>\n";
-    return $xml;
-}
-
-t('common: secretsman_template_path_for() matches the real my-<Name>.xml convention', function () {
-    assert_eq(SECRETSMAN_TEMPLATES_DIR . '/my-AdGuardHome.xml', secretsman_template_path_for('AdGuardHome'));
-});
-
-t('common: secretsman_find_file_tokens() finds a !secretfile token in a Variable field', function () {
-    $dir = scratch_dir();
-    $tpl = $dir . '/my-fixture.xml';
-    file_put_contents($tpl, fixture_template_xml([
-        ['target' => 'MY_TOKEN', 'type' => 'Variable', 'value' => '!secretfile ns/key'],
-    ]));
-    $tokens = secretsman_find_file_tokens($tpl);
-    assert_eq([['ns' => 'ns', 'key' => 'key']], $tokens);
-});
-
-t('common: secretsman_find_file_tokens() excludes !secret (env-mode) tokens', function () {
-    $dir = scratch_dir();
-    $tpl = $dir . '/my-fixture.xml';
-    file_put_contents($tpl, fixture_template_xml([
-        ['target' => 'ENV_TOKEN', 'type' => 'Variable', 'value' => '!secret ns/key'],
-    ]));
-    assert_eq([], secretsman_find_file_tokens($tpl));
-});
-
-t('common: secretsman_find_file_tokens() ignores non-Variable fields entirely', function () {
-    $dir = scratch_dir();
-    $tpl = $dir . '/my-fixture.xml';
-    // Shouldn't be possible in a saved template (creation would have
-    // aborted), but the scanner must not crash or misparse if it happens.
-    file_put_contents($tpl, fixture_template_xml([
-        ['target' => '/x', 'type' => 'Path', 'default' => '!secretfile ns/key'],
-    ]));
-    assert_eq([], secretsman_find_file_tokens($tpl));
-});
-
-t('common: secretsman_find_file_tokens() skips a malformed token without throwing', function () {
-    $dir = scratch_dir();
-    $tpl = $dir . '/my-fixture.xml';
-    file_put_contents($tpl, fixture_template_xml([
-        ['target' => 'BAD', 'type' => 'Variable', 'value' => '!secretfoo ns/key'],
-        ['target' => 'GOOD', 'type' => 'Variable', 'value' => '!secretfile ns/good'],
-    ]));
-    assert_eq([['ns' => 'ns', 'key' => 'good']], secretsman_find_file_tokens($tpl));
-});
-
-t('common: secretsman_find_file_tokens() returns [] for a missing/unreadable template', function () {
-    assert_eq([], secretsman_find_file_tokens('/nonexistent/my-x.xml'));
-});
-
-t('repopulate: read_autostart_list() parses names, ignores blank lines, handles a wait-seconds column', function () {
-    $dir = scratch_dir();
-    $path = $dir . '/unraid-autostart';
-    file_put_contents($path, "AdGuardHome\n\nbinhex-deluge 10\n");
-    assert_eq(['AdGuardHome', 'binhex-deluge'], read_autostart_list($path));
-});
-
-t('repopulate: read_autostart_list() returns null for a missing file', function () {
-    assert_eq(null, read_autostart_list('/nonexistent/unraid-autostart'));
-});
+// apply_patch_main() hits hardcoded Unraid system paths by design (the live
+// Helpers.php) and is validated end-to-end by tests/harness/ against the
+// live host, not here. What's tested here is every pure/parameterized piece
+// it's built from. (The template-scanning and boot-repopulation pieces that
+// used to live here went away with !secretfile — see CLAUDE.md's dated
+// correction for why.)
 
 t('patch: secretsman_patch_revert() exactly undoes secretsman_patch_apply()', function () {
     $original = fixture_helpers_contents();

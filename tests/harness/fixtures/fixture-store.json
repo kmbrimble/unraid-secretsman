@@ -1,6 +1,5 @@
 {
     "secretsman-harness": {
-        "fixture-env-key": "HARNESS-SENTINEL-ENV-VALUE-NOT-A-REAL-SECRET",
-        "fixture-file-key": "HARNESS-SENTINEL-FILE-VALUE-NOT-A-REAL-SECRET"
+        "fixture-env-key": "HARNESS-SENTINEL-ENV-VALUE-NOT-A-REAL-SECRET"
     }
 }
