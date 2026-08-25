@@ -250,13 +250,23 @@ same way a real boot would. See `docs/phase2-resume.md` for the full incident.
   `xmlToCommand()` (via the staging harness bootstrap) against a fixture template and asserts
   the sentinel value from a fixture store appears nowhere in the returned `$cmd`. This runs
   against the patched function's real return value on the real host, not a mock of it.
-  **Clean removal / revert-to-stock is UNVERIFIED and deliberately DEFERRED, not skipped.**
-  `Helpers.php` patching and boot-time re-patch have both been proven live on the real host (see
-  `docs/phase2-resume.md`) — but the `.plg`'s `Method="remove"` block and `scripts/uninstall.php`
-  have never once been run against the live install, because the plugin works and stays
-  installed. Do not assume that path works just because the install path does; it needs the same
-  real-mechanism verification (clean slate, actual `plugin remove`, confirm stock hash returns)
-  before it can be trusted, whenever there's an actual reason to remove it.
+  **Clean removal / revert-to-stock: VERIFIED (2026-08-25, step 7, pre-1.0.0).** Real
+  `/usr/local/sbin/plugin remove unraid-secretsman.plg` against a live, currently-installed,
+  currently-patched host: `Helpers.php` returned to the exact stock hash
+  `9a45421b387b733ad260e204308baa69` (0 markers), the installed tree, staged package, package
+  DB entry, and plugin-manager registry all cleanly gone, the `.plg` correctly landed in
+  `/boot/config/plugins-removed/`, `store.json` was byte-identical before and after, a
+  container already using `!secret` (`terrible-butler`) kept running with no restart, and a
+  fresh Apply against a template holding a `!secret` token — genuinely stock now — passed the
+  literal token through as an inert env-var value with no crash, exactly as expected once the
+  plugin is actually gone. This caught a real, previously-unverified bug on the way: the
+  remove block gated the revert on `[[ -x scripts/uninstall.php ]]`, but that script has no
+  shebang and is invoked as `php <path>`, so it's packaged 0644 and the check was always
+  false — the revert silently never ran. Invisible by accident, because a reboot restores
+  stock `Helpers.php` anyway (rule 4), so "removal worked" looked true either way; found only
+  by actually reading the removal path before trusting it, not by the drill happening to pass.
+  Fixed to `-f`, regression-tested in `tests/run.php`. Re-run this drill after any future
+  change to `uninstall.php`, the `.plg`'s remove block, or `secretsman_patch_revert()`.
 - **Phase 3 — Settings GUI (this repo, current state).** Prompted by a real incident: a
   hand-edited `store.json` with a missing comma and a trailing comma produced a completely
   blank Docker "Update Container" page with no visible error. Two shipped files:

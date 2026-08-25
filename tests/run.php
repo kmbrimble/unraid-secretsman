@@ -848,6 +848,26 @@ t('plg: FILE elements use the installer\'s actual property names (INLINE, not In
     }
 });
 
+t('plg: the remove block checks uninstall.php with -f, not -x', function () {
+    // Caught live during step 7 verification: uninstall.php (and every
+    // other plugin script) has no shebang and is invoked as `php <path>`,
+    // so it's never chmod +x — packaged 0644, same as apply_patch.php,
+    // which the install block invokes with no existence check at all.
+    // A `[[ -x ... ]]` guard on the remove side is therefore always
+    // false, so the Helpers.php revert silently never runs — and the
+    // symptom is invisible because a reboot restores stock Helpers.php
+    // anyway (rule 4), so "removal worked" looks true by accident.
+    $plg = file_get_contents(__DIR__ . '/../unraid-secretsman.plg');
+    assert_true(
+        strpos($plg, '-x &emhttp;/scripts/uninstall.php') === false,
+        'remove block must not gate uninstall.php on -x (always false for a shebang-less PHP script)'
+    );
+    assert_true(
+        strpos($plg, '-f &emhttp;/scripts/uninstall.php') !== false,
+        'remove block should gate uninstall.php on -f (file exists), matching how it is actually invoked'
+    );
+});
+
 t('plg: the packaged .txz extracts to the real absolute install path, not a bare package-name root', function () {
     // Caught live during Gate 2: scripts/build-plugin.sh archived the tree
     // rooted at "unraid-secretsman/...". Slackware's upgradepkg/installpkg

@@ -53,12 +53,35 @@ There is no file-based mode. An earlier `!secretfile` variant (bind-mounting the
 file, for apps that read from `_FILE`/`FILE__` paths instead of environment variables) was
 removed — see SECURITY below for why.
 
+## Managing secrets
+
+A Settings page (**Settings → User Utilities → SecretsMan**) handles the store without SSH:
+add a secret, click **Copy token** on its row, and paste the exact `!secret ns/key` string into
+the template's Variable field in place of the value. A revealed value is never in the page
+source until you explicitly click Reveal on that one row; every other view only ever shows a
+length. The page also scans your saved templates and flags any `!secret` token that doesn't
+match a stored secret, or doesn't parse at all — the two mistakes that used to fail silently.
+
+<!-- TODO: drop a screenshot of the Settings page in as docs/screenshot-settings-page.png and
+     reference it here, e.g. ![SecretsMan settings page](docs/screenshot-settings-page.png) -->
+
+The store also stays hand-editable at `/mnt/user/appdata/.secrets/store.json` — the page is an
+alternative, not a replacement.
+
+## Compatibility
+
+Verified on **Unraid 7.3.1**. Other versions are not assumed compatible: the patch is
+checksum-guarded against known-good hashes in `reference/<version>/HASHES`, so on any version
+without a matching entry it **refuses to apply and raises a notification instead of patching
+blindly** — the system is left exactly as it was, not partially or incorrectly patched. See
+CLAUDE.md's "Insertion point" and rule 4 for why this is the whole point of the design.
+
 ## Install
 
-Not yet in Community Applications. Install by URL from the **Plugins → Install Plugin** page,
-using the `.plg` URL from the latest
-[GitHub Release](https://github.com/kmbrimble/unraid-secretsman/releases) (Phase 2 — packaging
-isn't built yet; see `CLAUDE.md` for the roadmap).
+Not in Community Applications. Install by URL from the **Plugins → Install Plugin** page, using
+the `.plg` URL from the latest
+[GitHub Release](https://github.com/kmbrimble/unraid-secretsman/releases). **No release has been
+cut yet** — see `CLAUDE.md`'s Phase roadmap for what's gating that.
 
 ## SECURITY
 
@@ -111,9 +134,9 @@ resolved at container-create time in the GUI, never at boot.
 
 ## Status
 
-Phase 1 (this repo, right now): a version-independent resolver library with a failing-first unit
-test suite, isolated from the live Unraid install. It is not yet wired into Unraid at all — see
-`CLAUDE.md` for the phase roadmap.
+Functional and verified live: the resolver, the boot-time patch, the Settings GUI, and clean
+removal (install → remove → confirm stock `Helpers.php` returns byte-for-byte) all work on the
+recon host (Unraid 7.3.1). **Not yet tagged as a release** — see `CLAUDE.md`'s Phase roadmap.
 
 ## License
 
