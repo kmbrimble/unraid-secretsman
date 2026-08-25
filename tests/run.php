@@ -1246,6 +1246,15 @@ if (secretsman_backup_7z_bin() !== null) {
         assert_eq('sevenzip', secretsman_backup_detect_format($result['path']));
         $decoded = secretsman_backup_verify($result['path'], 'hunter2');
         assert_eq(['ns' => ['k' => 'test-value-not-a-real-secret']], $decoded);
+        // Caught live: macOS's built-in Archive Utility refuses a 7z archive
+        // with AES-256 encryption and reports it as damaged — indistinguishable,
+        // to someone who doesn't already know this, from a wrong password at
+        // exactly the worst possible moment (trying to recover from a lost
+        // store). The readme has to say so explicitly, not just name working
+        // tools and let the reader assume any of them would do.
+        $readmeContent = file_get_contents($result['readme']);
+        assert_true(str_contains($readmeContent, 'Archive Utility'), 'readme should warn macOS Archive Utility does not work');
+        assert_true(str_contains($readmeContent, 'Unarchiver') || str_contains($readmeContent, 'Keka'), 'readme should name a working alternative');
     });
 
     t('backup: an archive made without 7z restores fine even when 7z happens to be present, and vice versa is format-driven not host-driven', function () {

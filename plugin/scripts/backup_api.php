@@ -78,9 +78,11 @@ function render_backup_html(array $config, bool $passwordSet, array $archives): 
     $html .= '<td>Keep last</td><td><input type="number" id="bk-retention" class="narrow" min="0" value="' . (int)($config['retention'] ?? 3) . '"> archives (0 = unlimited)</td>';
     $html .= '</tr><tr>';
     $html .= '<td>Archive password</td><td>'
-        . '<input type="password" id="bk-password" class="wide" autocomplete="new-password" placeholder="'
-        . ($passwordSet ? 'set — leave blank to keep it' : 'not set yet') . '"> '
-        . '<label><input type="checkbox" id="bk-password-show"> show</label>'
+        . '<span style="display:inline-flex;align-items:center;gap:0.5em">'
+        . '<input type="password" id="bk-password" autocomplete="new-password" placeholder="'
+        . ($passwordSet ? 'set — leave blank to keep it' : 'not set yet') . '">'
+        . '<label style="white-space:nowrap"><input type="checkbox" id="bk-password-show"> show</label>'
+        . '</span>'
         . '</td></tr></table>';
     $html .= '<button id="bk-save" type="button">Save backup settings</button> ';
     $html .= '<button id="bk-now" type="button"' . ($passwordSet ? '' : ' disabled title="Set a password first"') . '>Back up now</button> ';

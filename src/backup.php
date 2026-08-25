@@ -240,8 +240,11 @@ function secretsman_backup_readme(string $tool, string $archiveName): string
             Archive: {$archiveName}
 
             To restore:
-              1. Open {$archiveName} in 7-Zip, Keka, The Unarchiver, or any tool that
-                 supports 7z with AES-256 encryption.
+              1. Open {$archiveName} in 7-Zip, Keka, or The Unarchiver — any tool that
+                 supports 7z with AES-256 encryption. On a Mac, macOS's own built-in
+                 Archive Utility does NOT support this and will refuse the archive or
+                 report it as damaged — that is not a sign your password is wrong, it
+                 just cannot open this format. Use The Unarchiver or Keka instead.
               2. Enter the password you set in SecretsMan's backup configuration on the
                  Unraid box this came from. The password is NOT stored in or near this
                  archive.
