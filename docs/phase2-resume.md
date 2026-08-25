@@ -72,9 +72,37 @@ inotify-tools, **not** privileged, **not** `--pid=host` — just a read-only bin
 `/var/lib/docker/containers` plus a writable log destination), runs `inotifywait -m -r` for
 `delete,moved_from,delete_self,attrib,create` across the whole tree, logging timestamped events
 to `/mnt/user/appdata/claude-code/config/secretsman-fswatch.log`. Restart policy
-`unless-stopped`. It gives **what happened, when, and to which path** — not which process, since
-that needs the audit subsystem this host doesn't have installed. Check that log file first
-before anything else next session.
+`unless-stopped`. It gives **what happened, when, and to which path** — not which process. Check
+that log file first before anything else next session.
+
+**Caveat on anything the watcher catches:** the investigation's own directory-wide `ls`/`grep`
+scan touched `secretsman-smoketest`'s `config.v2.json` seconds before it vanished, and that
+can't be excluded as a proximate trigger (see below). `secretsman-fswatch` itself does the same
+kind of read — `inotifywait -r` has to stat the whole tree to establish watches, and its `-e`
+mask includes `create`, which will also fire for its own future watch-list operations. If
+dockerd reconciles-on-touch, the watcher's own presence is a candidate cause for anything it
+logs, not just a neutral observer. Read any hit in that log with that in mind, not as clean
+proof of an external actor.
+
+**auditd: intentionally not installed.** Decision made explicitly: no new host packages, no
+privileged containers beyond what's already run, while this investigation is open.
+
+**Prepared, NOT applied — dockerd log-level change for the step 7 removal reboot:**
+Unraid's stock `/etc/rc.d/rc.docker` hardcodes quiet logging, unconditionally, not driven by
+`docker.cfg`:
+```
+line ~127-128:
+  # Less verbose logging by default
+  DOCKER_OPTS="--log-level=fatal $DOCKER_OPTS"
+```
+To get the daemon itself to say what it did (better evidence than PID attribution — the actual
+actor, not just a bystander log), change `fatal` to `info` on that line before the next
+`rc.docker start`. This is a stock OS file restored from the image at every boot (same category
+as `Helpers.php`, rule 4) — editing it live needs no plugin and no persistence work, and reverts
+for free on the next natural reboot without doing anything. To revert without a reboot, just
+change `info` back to `fatal` on that line before any subsequent `rc.docker start`. Do this at
+the step 7 removal reboot, since docker is stopping anyway then — not before, per the standing
+"never stop the Docker service" constraint.
 
 **Evidence preserved, do not touch:** ESPHome, Immich-Kiosk, Overseerr, and Lidarr are left
 exactly as the reboot left them (not restarted, not recreated, not removed) — they're the only
