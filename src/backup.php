@@ -452,6 +452,14 @@ function secretsman_backup_restore(string $archivePath, string $password, string
     $incoming = secretsman_backup_verify($archivePath, $password);
 
     if ($mode === 'replace') {
+        $before = is_file($storePath) ? secretsman_load_store($storePath) : [];
+        $beforeKeys = [];
+        foreach ($before as $ns => $keys) {
+            foreach (array_keys($keys) as $k) {
+                $beforeKeys[] = "{$ns}/{$k}";
+            }
+        }
+
         secretsman_save_store($storePath, $incoming);
         $added = [];
         foreach ($incoming as $ns => $keys) {
@@ -459,7 +467,8 @@ function secretsman_backup_restore(string $archivePath, string $password, string
                 $added[] = "{$ns}/{$k}";
             }
         }
-        return ['mode' => 'replace', 'added' => $added, 'collisions' => []];
+        $removed = array_values(array_diff($beforeKeys, $added));
+        return ['mode' => 'replace', 'added' => $added, 'collisions' => [], 'removed' => $removed];
     }
 
     if ($mode !== 'merge') {
@@ -480,7 +489,7 @@ function secretsman_backup_restore(string $archivePath, string $password, string
         }
     }
     secretsman_save_store($storePath, $current);
-    return ['mode' => 'merge', 'added' => $added, 'collisions' => $collisions];
+    return ['mode' => 'merge', 'added' => $added, 'collisions' => $collisions, 'removed' => []];
 }
 
 /** Every secretsman archive in $destDir, newest first. */

@@ -166,7 +166,9 @@ try {
             }
 
             reregister_cron();
-            respond(config_payload());
+            $payload = config_payload();
+            $payload['message'] = 'secretsman: backup settings saved';
+            respond($payload);
 
         case 'backup_now':
             // Delegates to backup_cron.php's backup_cron_main() rather than
@@ -180,7 +182,9 @@ try {
             if (!$result['ok']) {
                 throw new SecretsmanError($result['message']);
             }
-            respond(config_payload());
+            $payload = config_payload();
+            $payload['message'] = $result['message']; // names the archive path and byte count
+            respond($payload);
 
         case 'restore':
             $password = (string)($_POST['password'] ?? '');

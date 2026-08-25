@@ -1121,6 +1121,22 @@ t('restore: replace mode makes the archive the whole store', function () {
     assert_eq(['ns' => ['a' => 'from-backup']], secretsman_load_store($liveStorePath));
 });
 
+t('restore: replace mode reports which keys were removed, not just which were added', function () {
+    // Caught live: the page showed no feedback at all after a restore. The
+    // backend was already returning a correct result — this specific gap
+    // (replace mode had no way to say what it discarded) was part of
+    // closing "report what actually happened" properly for both modes.
+    $dir = scratch_dir();
+    $backupSource = write_store($dir . '/src', ['ns' => ['a' => 'from-backup']]);
+    $result = secretsman_backup_create($backupSource, 'hunter2', $dir . '/dest', 'openssl');
+
+    $liveStorePath = write_store($dir . '/live', ['ns' => ['a' => 'kept', 'b' => 'discarded'], 'other' => ['c' => 'also-discarded']]);
+    $outcome = secretsman_backup_restore($result['path'], 'hunter2', $liveStorePath, 'replace');
+    assert_eq(['ns/a'], $outcome['added']);
+    sort($outcome['removed']);
+    assert_eq(['ns/b', 'other/c'], $outcome['removed']);
+});
+
 t('restore: merge mode adds missing keys and leaves existing ones untouched', function () {
     $dir = scratch_dir();
     $backupSource = write_store($dir . '/src', ['ns' => ['a' => 'from-backup', 'b' => 'also-from-backup']]);
