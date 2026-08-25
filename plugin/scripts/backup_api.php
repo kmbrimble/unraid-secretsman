@@ -54,16 +54,20 @@ function render_backup_html(array $config, bool $passwordSet, array $archives): 
     $mode = $schedule['mode'] ?? 'off';
 
     $html = '<table class="new"><tr>';
-    $html .= '<td>Destination</td><td><input type="text" id="bk-dest" class="wide" value="' . h((string)($config['destination'] ?? '')) . '" placeholder="/mnt/user/backups/secretsman"></td>';
+    $html .= '<td>Destination</td><td>'
+        . '<input type="text" id="bk-dest" value="' . h((string)($config['destination'] ?? '')) . '" placeholder="/mnt/user/backups/secretsman"> '
+        . '<button id="bk-dest-browse" type="button">Browse&hellip;</button>'
+        . '<div id="bk-dest-tree" style="display:none;max-height:16em;overflow:auto;border:1px solid var(--input-border-color, #888);padding:.5em;margin-top:.5em"></div>'
+        . '</td>';
     $html .= '</tr><tr>';
     $html .= '<td>Schedule</td><td>'
-        . '<select id="bk-mode">'
+        . '<select id="bk-mode" class="narrow">'
         . option('off', 'Off', $mode) . option('daily', 'Daily', $mode)
         . option('weekly', 'Weekly', $mode) . option('monthly', 'Monthly', $mode)
         . '</select> '
         . '<input type="number" id="bk-hour" class="narrow" min="0" max="23" value="' . (int)($schedule['hour'] ?? 0) . '" title="Hour (0-23)"> : '
         . '<input type="number" id="bk-minute" class="narrow" min="0" max="59" value="' . (int)($schedule['minute'] ?? 0) . '" title="Minute (0-59)"> '
-        . '<select id="bk-weekday" title="Day of week">'
+        . '<select id="bk-weekday" class="narrow" title="Day of week">'
         . option('0', 'Sunday', (string)($schedule['weekday'] ?? 0)) . option('1', 'Monday', (string)($schedule['weekday'] ?? 0))
         . option('2', 'Tuesday', (string)($schedule['weekday'] ?? 0)) . option('3', 'Wednesday', (string)($schedule['weekday'] ?? 0))
         . option('4', 'Thursday', (string)($schedule['weekday'] ?? 0)) . option('5', 'Friday', (string)($schedule['weekday'] ?? 0))
@@ -71,7 +75,7 @@ function render_backup_html(array $config, bool $passwordSet, array $archives): 
         . '</select> '
         . '<input type="number" id="bk-dayofmonth" class="narrow" min="1" max="28" value="' . (int)($schedule['dayOfMonth'] ?? 1) . '" title="Day of month (1-28)">'
         . '</td></tr><tr>';
-    $html .= '<td>Keep last</td><td><input type="number" id="bk-retention" class="narrow" min="0" value="' . (int)($config['retention'] ?? 30) . '"> archives (0 = unlimited)</td>';
+    $html .= '<td>Keep last</td><td><input type="number" id="bk-retention" class="narrow" min="0" value="' . (int)($config['retention'] ?? 3) . '"> archives (0 = unlimited)</td>';
     $html .= '</tr><tr>';
     $html .= '<td>Archive password</td><td>'
         . '<input type="password" id="bk-password" class="wide" autocomplete="new-password" placeholder="'
@@ -118,11 +122,20 @@ function config_payload(): array
     return ['ok' => true, 'html' => render_backup_html($config, $passwordSet, $archives)];
 }
 
-/** Regenerate the cron entry in-process, same effect as running the CLI script. */
+/**
+ * Regenerate the cron entry in-process, same effect as running the CLI
+ * script. Does not fail the whole config_set request if this specific step
+ * fails — the config itself already saved — but does not swallow the
+ * failure silently either: logged via error_log() (safe under php-fpm,
+ * unlike fwrite(STDERR,...) — see backup_cron_register.php's own comment).
+ */
 function reregister_cron(): void
 {
     require_once __DIR__ . '/backup_cron_register.php';
-    backup_cron_register_main();
+    $result = backup_cron_register_main();
+    if (!$result['ok']) {
+        error_log($result['message']);
+    }
 }
 
 $action = $_POST['action'] ?? '';
@@ -142,7 +155,7 @@ try {
                 'weekday' => (int)($_POST['weekday'] ?? 0),
                 'dayOfMonth' => (int)($_POST['dayOfMonth'] ?? 1),
             ];
-            $config['retention'] = (int)($_POST['retention'] ?? 30);
+            $config['retention'] = (int)($_POST['retention'] ?? 3);
             secretsman_backup_config_save($config);
 
             $newPassword = (string)($_POST['password'] ?? '');
@@ -164,7 +177,7 @@ try {
                 throw new SecretsmanError('secretsman: set a backup password before backing up');
             }
             $result = secretsman_backup_create(secretsman_default_store_path(), $password, $destination);
-            secretsman_backup_prune($destination, (int)($config['retention'] ?? 30));
+            secretsman_backup_prune($destination, (int)($config['retention'] ?? 3));
             $config['lastRun'] = ['time' => time(), 'ok' => true, 'message' => "backed up via {$result['tool']}"];
             secretsman_backup_config_save($config);
             respond(config_payload());
@@ -206,4 +219,15 @@ try {
     // Every SecretsmanError message names the shape of the problem, never a
     // value (project rule 3) — safe to return to the client verbatim.
     respond(['ok' => false, 'error' => $e->getMessage()]);
+} catch (\Throwable $e) {
+    // Catches anything SecretsmanError doesn't — a plain PHP fatal (a typo'd
+    // constant, a TypeError, ...) previously reached the client as a bare
+    // 500 with no body, which jQuery could only report as "request failed —
+    // check the browser console". That's exactly the failure this project
+    // has already been burned by once (the blank Docker Apply page) and
+    // isn't repeating a second time. Full detail goes to the PHP error log
+    // (safe — never reaches the client); a readable summary goes to the
+    // banner, since knowing WHAT broke beats a dead end.
+    error_log('secretsman: unhandled ' . get_class($e) . ' in backup_api.php: ' . $e->getMessage() . "\n" . $e->getTraceAsString());
+    respond(['ok' => false, 'error' => 'secretsman: internal error — ' . get_class($e) . ': ' . $e->getMessage()]);
 }

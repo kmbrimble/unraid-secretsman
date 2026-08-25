@@ -979,7 +979,7 @@ t('backup: config_load() returns sane defaults when nothing has been saved', fun
         $config = secretsman_backup_config_load();
         assert_eq('', $config['destination']);
         assert_eq('off', $config['schedule']['mode']);
-        assert_eq(30, $config['retention']);
+        assert_eq(3, $config['retention']);
         assert_eq(null, $config['lastRun']);
     } finally {
         putenv('SECRETSMAN_BACKUP_CONFIG_PATH');
@@ -1154,6 +1154,29 @@ t('cron: cron_line() builds the expected 5-field expression per mode', function 
     assert_eq('30 3 * * * php /x/backup_cron.php > /dev/null 2>&1', secretsman_backup_cron_line(['mode' => 'daily', 'hour' => 3, 'minute' => 30], '/x/backup_cron.php'));
     assert_eq('0 1 * * 1 php /x/backup_cron.php > /dev/null 2>&1', secretsman_backup_cron_line(['mode' => 'weekly', 'hour' => 1, 'minute' => 0, 'weekday' => 1], '/x/backup_cron.php'));
     assert_eq('0 2 15 * * php /x/backup_cron.php > /dev/null 2>&1', secretsman_backup_cron_line(['mode' => 'monthly', 'hour' => 2, 'minute' => 0, 'dayOfMonth' => 15], '/x/backup_cron.php'));
+});
+
+t('cron: backup_cron_register_main() never touches STDOUT/STDERR directly', function () {
+    // Caught live: this function is called both from the CLI install block
+    // AND in-process from backup_api.php's web request (php-fpm) context,
+    // where STDOUT/STDERR are undefined — the direct fwrite(STDOUT/STDERR,
+    // ...) calls that used to live inside it produced an uncaught "Undefined
+    // constant STDOUT" fatal (a live 500 with no useful client message) the
+    // moment a user saved backup settings through the GUI. Fixed by having
+    // the function return a result instead of printing; only the CLI-only
+    // guard at the bottom of the file (which never runs when this file is
+    // require_once'd from a web script) does any printing. This test can't
+    // reproduce the actual failure (tests/run.php always runs under the CLI
+    // SAPI, where STDOUT/STDERR ARE defined — the bug is invisible to a CLI
+    // test suite by construction, which is exactly why it slipped through
+    // the first time), so it guards the source shape directly instead.
+    $src = file_get_contents(__DIR__ . '/../plugin/scripts/backup_cron_register.php');
+    $start = strpos($src, 'function backup_cron_register_main()');
+    $guardStart = strpos($src, "if (realpath(\$_SERVER['SCRIPT_FILENAME']");
+    assert_true($start !== false && $guardStart !== false, 'could not locate the function or the CLI guard');
+    $functionBody = substr($src, $start, $guardStart - $start);
+    assert_true(!str_contains($functionBody, 'STDOUT'), 'backup_cron_register_main() must not reference STDOUT directly');
+    assert_true(!str_contains($functionBody, 'STDERR'), 'backup_cron_register_main() must not reference STDERR directly');
 });
 
 t('cron: backup_cron_register_main() writes the flash .cron file matching the saved config', function () {

@@ -46,6 +46,13 @@ cp -r "$REPO_ROOT"/reference/. "$PKG_DIR/reference/"
 # competing plugin's page under its own pages/ subdir is not reachable.
 cp "$REPO_ROOT"/plugin/*.page "$PKG_DIR/"
 
+# The Installed Plugins page reads its description from README.md at the
+# plugin's installed root (dynamix.plugin.manager/include/ShowPlugins.php:
+# `plugins/{name}/README.md`, Markdown-rendered, falls back to just the bare
+# plugin name if absent) — confirmed missing was the entire reason no
+# description showed there.
+cp "$REPO_ROOT"/README.md "$PKG_DIR/"
+
 mkdir -p "$OUT_DIR"
 TXZ_PATH="$OUT_DIR/$NAME-$VERSION.txz"
 ( cd "$BUILD_DIR" && tar -cJf "$TXZ_PATH" usr )

@@ -60,7 +60,9 @@ function secretsman_backup_config_load(): array
     $default = [
         'destination' => '',
         'schedule'    => ['mode' => 'off', 'hour' => 0, 'minute' => 0, 'weekday' => 0, 'dayOfMonth' => 1],
-        'retention'   => 30,
+        'retention'   => 3, // this is an emergency-restore mechanism, not version history —
+                            // 3 rather than 2 so one bad backup over a corrupted store
+                            // doesn't immediately evict the last known-good archive
         'lastRun'     => null, // ['time' => int, 'ok' => bool, 'message' => string]
     ];
     $path = secretsman_backup_config_path();

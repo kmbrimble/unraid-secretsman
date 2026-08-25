@@ -36,7 +36,7 @@ function backup_cron_main(): int
 
     try {
         $result = secretsman_backup_create(secretsman_default_store_path(), $password, $destination);
-        $deleted = secretsman_backup_prune($destination, (int)($config['retention'] ?? 30));
+        $deleted = secretsman_backup_prune($destination, (int)($config['retention'] ?? 3));
         $config['lastRun'] = ['time' => time(), 'ok' => true, 'message' => "backed up via {$result['tool']}"];
         secretsman_backup_config_save($config);
         fwrite(STDOUT, "secretsman: backup ok: {$result['path']} ({$result['bytes']} bytes)\n");

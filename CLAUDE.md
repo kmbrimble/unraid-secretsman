@@ -301,13 +301,17 @@ same way a real boot would. See `docs/phase2-resume.md` for the full incident.
   `RECOVERY.md` drill was not re-run for this phase — rule 7 scopes it to the patch layer,
   which this phase never touches — but the clean-slate install re-verification standing rule
   above **was** re-applied, since `scripts/build-plugin.sh` and the `.plg` both changed.
-  **Known issue, out of scope for this phase:** `plugin/scripts/common.php`'s
-  `secretsman_notify()` falls back to `fwrite(STDERR, ...)` when the notify binary isn't
-  executable — `STDERR` is a CLI-SAPI-only constant and is undefined under php-fpm, so calling
-  `secretsman_notify()` from a web-facing script would fatal. `store_api.php` sidesteps this by
-  never including `common.php` (it has no reason to raise an Unraid notification — GUI errors
-  go to the user who caused them, in the page). Fix with a one-line `error_log()` swap
-  whenever something web-facing actually needs to notify.
+  **Fixed pre-emptively, after the same bug class fired for real elsewhere (see the STANDING
+  NOTE below):** `plugin/scripts/common.php`'s `secretsman_notify()` used to fall back to
+  `fwrite(STDERR, ...)` when the notify binary isn't executable — `STDERR` is undefined under
+  php-fpm. It was flagged as a known-but-theoretical issue for a full phase, on the reasoning
+  that `store_api.php`/`backup_api.php` never include `common.php`. That reasoning stopped
+  being airtight the moment `backup_cron_register.php` (which *does* include `common.php`)
+  became reachable from `backup_api.php`'s web request — and, separately, that exact class of
+  bug (a direct `fwrite(STDOUT/STDERR, ...)` call inside `backup_cron_register.php` itself)
+  did fire live, producing a bare 500 the instant a real user saved backup settings. Switched
+  to `error_log()`, closing the gap before it fired through this specific path too rather than
+  waiting for a second live incident to force it.
   **CSRF: do not add a plugin-side check.** `webGui/include/local_prepend.php` (the global
   `auto_prepend_file`) already enforces CSRF on every POST reaching any plugin PHP file — and,
   critically, it **consumes the token** (`unset($_POST['csrf_token'])`) immediately after
@@ -370,6 +374,38 @@ same way a real boot would. See `docs/phase2-resume.md` for the full incident.
   *before* `rm -rf &plgPATH;` deletes the flash config that registration depends on, flagged
   specifically since a forgotten deregistration step is exactly the kind of thing that's
   silently lost (same category as the `-x`/`-f` bug step 7 caught).
+  **Live incident after shipping:** `backup_cron_register.php` was deliberately written to be
+  callable from two contexts — the CLI install block, and in-process from `backup_api.php`'s
+  web request when a schedule is saved — but its `fwrite(STDOUT/STDERR, ...)` calls (fine in
+  the CLI context it was written and tested against) fatal with "Undefined constant STDOUT"
+  the moment they execute under php-fpm, which has no such constants. The result was a bare 500
+  with no JSON body the instant a real user saved backup settings. Fixed by having the function
+  return a result instead of printing, with only the CLI-only invocation guard doing any
+  output; see the STANDING NOTE below for why the test suite couldn't have caught this and
+  what to do differently. Also fixed in the same pass, from the same incident report: the
+  dispatcher in both `backup_api.php` and `store_api.php` only caught `SecretsmanError`, so
+  this (and any other uncaught `\Throwable`) reached the client as an empty 500 the page could
+  only describe as "check the browser console" — the second time this project has told a user
+  to go look elsewhere instead of saying what broke (the blank Docker Apply page was the
+  first). Both now catch `\Throwable` too, logging full detail via `error_log()` (safe under
+  php-fpm) and returning a readable `Class: message` to the banner.
+
+## STANDING NOTE — a script written for one context breaks silently in a second one
+
+`backup_cron_register.php` was designed on purpose to run from two different PHP execution
+contexts (CLI and php-fpm), and the bug that shipped was exactly the kind of thing that's
+invisible from inside just one of them: `tests/run.php` always runs under the CLI SAPI, where
+`STDOUT`/`STDERR` are defined — so the test suite calling this function would never see the
+failure that a real web request hit immediately. **A dual-context script cannot be trusted
+just because its CLI invocation was tested; each context it's actually reachable from needs to
+be exercised, and if that's not practical, avoid the SAPI-specific primitive entirely** (return
+values instead of `fwrite(STDOUT/STDERR)`, `error_log()` instead of `STDERR`) so the bug class
+is structurally impossible rather than a coverage gap. This is the same lesson as `secretsman_notify()`'s
+still-unfixed `STDERR` fallback, flagged as a known issue for a full phase before it actually
+fired — the theoretical version of this note was already written down and didn't prevent a
+second, live occurrence in a different file. Next time a shared script grows a second caller in
+a different execution context, check what that context does and doesn't define before assuming
+the existing code still works there.
 
 ## STANDING NOTE — stop layering defensive checks on mechanisms you haven't fully verified
 

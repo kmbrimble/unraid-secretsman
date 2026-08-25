@@ -197,4 +197,12 @@ try {
     // Every SecretsmanError message names the shape of the problem, never a
     // value (project rule 3) — safe to return to the client verbatim.
     respond(['ok' => false, 'error' => $e->getMessage()]);
+} catch (\Throwable $e) {
+    // See backup_api.php's identical catch for why: an uncaught fatal
+    // otherwise reaches the client as a bare 500 with no body, which the
+    // page can only report as "check the browser console" — a dead end
+    // this project has already been burned by once (the blank Docker Apply
+    // page) and isn't repeating here too.
+    error_log('secretsman: unhandled ' . get_class($e) . ' in store_api.php: ' . $e->getMessage() . "\n" . $e->getTraceAsString());
+    respond(['ok' => false, 'error' => 'secretsman: internal error — ' . get_class($e) . ': ' . $e->getMessage()]);
 }

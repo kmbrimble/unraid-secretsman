@@ -5,10 +5,16 @@ declare(strict_types=1);
  * Shared helpers for the plugin's boot/CLI scripts (apply_patch.php,
  * uninstall.php, backup_cron.php, backup_cron_register.php). Not part of
  * src/ — this is Unraid environment glue (notify, live paths), not
- * version-independent resolver/backup logic. CLI-context only: store_api.php
- * and backup_api.php (web context) deliberately never include this file —
- * see their own header comments for why (secretsman_notify()'s STDERR
- * fallback fatals under php-fpm).
+ * version-independent resolver/backup logic.
+ *
+ * secretsman_notify() uses error_log(), not fwrite(STDERR, ...), on
+ * purpose: STDERR is a CLI-SAPI-only constant, undefined under php-fpm, and
+ * backup_cron_register.php (which requires this file) is itself reachable
+ * from backup_api.php's web request context — this is no longer a
+ * theoretical risk kept out only by every current caller avoiding it. See
+ * CLAUDE.md's dated standing note on this exact class of bug (it already
+ * fired once, in backup_cron_register.php directly, before this one was
+ * fixed pre-emptively).
  */
 
 const SECRETSMAN_NOTIFY_BIN = '/usr/local/emhttp/webGui/scripts/notify';
@@ -19,7 +25,7 @@ const SECRETSMAN_BACKUP_CRON_SCRIPT = '/usr/local/emhttp/plugins/unraid-secretsm
 function secretsman_notify(string $subject, string $description, string $importance = 'warning', string $link = '/Docker'): void
 {
     if (!is_executable(SECRETSMAN_NOTIFY_BIN)) {
-        fwrite(STDERR, "secretsman: notify script not found, would have said: {$subject}: {$description}\n");
+        error_log("secretsman: notify script not found, would have said: {$subject}: {$description}");
         return;
     }
     $cmd = sprintf(
