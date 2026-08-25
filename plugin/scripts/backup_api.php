@@ -167,19 +167,17 @@ try {
             respond(config_payload());
 
         case 'backup_now':
-            $config = secretsman_backup_config_load();
-            $destination = (string)($config['destination'] ?? '');
-            if ($destination === '') {
-                throw new SecretsmanError('secretsman: set a destination before backing up');
+            // Delegates to backup_cron.php's backup_cron_main() rather than
+            // duplicating its steps here — the two used to be separate
+            // copies of the same logic, which is exactly how
+            // backup_cron_register.php's STDOUT/STDERR bug would have
+            // resurfaced the moment someone "cleaned up" the duplication by
+            // wiring this the other, unsafe way. See CLAUDE.md rule 8.
+            require_once __DIR__ . '/backup_cron.php';
+            $result = backup_cron_main();
+            if (!$result['ok']) {
+                throw new SecretsmanError($result['message']);
             }
-            $password = secretsman_backup_password_load();
-            if ($password === null) {
-                throw new SecretsmanError('secretsman: set a backup password before backing up');
-            }
-            $result = secretsman_backup_create(secretsman_default_store_path(), $password, $destination);
-            secretsman_backup_prune($destination, (int)($config['retention'] ?? 3));
-            $config['lastRun'] = ['time' => time(), 'ok' => true, 'message' => "backed up via {$result['tool']}"];
-            secretsman_backup_config_save($config);
             respond(config_payload());
 
         case 'restore':

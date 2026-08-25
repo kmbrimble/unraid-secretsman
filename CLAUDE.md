@@ -24,6 +24,22 @@ next.
    point" below for how the resolver avoids this structurally, not by scrubbing after the fact.
 7. **Any change to the patch layer (Phase 2+) requires the recovery drill in `RECOVERY.md` to
    be re-run and confirmed working before that change ships.**
+8. **A function reachable from both a CLI script and a web-request script must not assume
+   CLI-only globals or semantics.** That means: no direct `STDOUT`/`STDERR` writes (undefined
+   under php-fpm — write a `[$ok, $message]`-shaped result instead, and let the CLI-only
+   invocation guard at the bottom of the file, `if (realpath($_SERVER['SCRIPT_FILENAME']) ===
+   __FILE__)`, do the printing and pick the exit code); no reliance on `$argv`; no assumption
+   about `getcwd()` matching the script's own directory; no using an exit code as the only
+   channel the caller learns the result through, since a web caller invoking the function
+   in-process never sees one. **The test suite cannot catch a violation of this rule** — it
+   runs exclusively under the CLI SAPI, where all of the above are defined by construction, so
+   a function that's broken only under php-fpm still passes every test. Checking for this at
+   the moment you give a CLI-only function a second, web-context caller is the only defense
+   that actually works — see the dated STANDING NOTE below, and note this is the *third* time
+   a caller in a different execution context (web vs. CLI, or a second enforcement layer with
+   different timing) silently invalidated an assumption baked into working code: this one, the
+   redundant CSRF check, and the `.plg` remove block's `-x` check on a script that's always
+   invoked via `php <path>`, never executed directly.
 
 ## Phase 0 recon (2026-08-24, read-only against the live host)
 
@@ -390,22 +406,57 @@ same way a real boot would. See `docs/phase2-resume.md` for the full incident.
   first). Both now catch `\Throwable` too, logging full detail via `error_log()` (safe under
   php-fpm) and returning a readable `Class: message` to the banner.
 
-## STANDING NOTE — a script written for one context breaks silently in a second one
+## STANDING NOTE — documenting a hazard is not the same as not reproducing it
 
-`backup_cron_register.php` was designed on purpose to run from two different PHP execution
-contexts (CLI and php-fpm), and the bug that shipped was exactly the kind of thing that's
-invisible from inside just one of them: `tests/run.php` always runs under the CLI SAPI, where
-`STDOUT`/`STDERR` are defined — so the test suite calling this function would never see the
-failure that a real web request hit immediately. **A dual-context script cannot be trusted
-just because its CLI invocation was tested; each context it's actually reachable from needs to
-be exercised, and if that's not practical, avoid the SAPI-specific primitive entirely** (return
-values instead of `fwrite(STDOUT/STDERR)`, `error_log()` instead of `STDERR`) so the bug class
-is structurally impossible rather than a coverage gap. This is the same lesson as `secretsman_notify()`'s
-still-unfixed `STDERR` fallback, flagged as a known issue for a full phase before it actually
-fired — the theoretical version of this note was already written down and didn't prevent a
-second, live occurrence in a different file. Next time a shared script grows a second caller in
-a different execution context, check what that context does and doesn't define before assuming
-the existing code still works there.
+During Phase 3 planning, this file already recorded that `secretsman_notify()`'s `STDERR`
+fallback would fatal under php-fpm, named the exact mechanism, and deferred the fix on the
+reasoning that nothing web-facing called it. That documentation did not stop the next piece of
+code written — `backup_cron_register.php`, deliberately designed to run from both the CLI
+install block and in-process from a web request — from making the identical mistake with its
+own direct `fwrite(STDOUT/STDERR, ...)` calls. Knowing about a hazard in the abstract and
+avoiding it while writing the next function that's actually exposed to it are different skills,
+and only the second one prevents the bug. **Rule 8, above, is the response: a checklist to run
+at the moment a function gains a second caller in a different execution context, not a fact to
+have once noted and moved on from.**
+
+This is also the *third* time a caller operating in a different execution context — web vs.
+CLI, or a second enforcement layer running at a different point in the request lifecycle —
+silently invalidated an assumption baked into code that had tested fine in its original
+context: this `STDOUT`/`STDERR` bug, the redundant CSRF check (which read a `$_POST` field
+after Unraid's own `auto_prepend_file` had already consumed it), and the `.plg` remove block's
+`-x` check against a script that is never executed directly, only ever run via `php <path>`.
+None of the three were caught by the test suite, because in each case the test suite's own
+execution context (CLI, no real webGui request pipeline, no real `plugin remove` invocation)
+was exactly the context in which the code was correct. **The pattern across all three: before
+trusting that existing code still works after adding a new way to reach it, ask what's
+different about how the new caller invokes it — not just whether the old caller still passes.**
+
+**Audit performed after this fired (2026-08-25):** every `plugin/scripts/*.php` and everything
+under `src/` checked for the same class — `STDOUT`/`STDERR`, `$argv`, `getcwd()`/`chdir()`,
+`php_sapi_name()` branching, and the inverse (a CLI script assuming `$_POST`/`$_FILES`/
+`REQUEST_METHOD`). `src/` is entirely clean. Two more functions had the identical shape
+(direct `STDOUT`/`STDERR` writes, safe only because nothing currently calls them from a web
+context): `backup_cron_main()` in `backup_cron.php`, and `apply_patch_main()`/`uninstall_main()`
+in `apply_patch.php`/`uninstall.php`.
+
+- **`backup_cron_main()` was fixed immediately, not left as a documented risk.** It was one
+  duplication-driven refactor away from actually breaking: `backup_api.php`'s `backup_now`
+  action independently re-implemented the same three steps instead of calling it, and
+  resolving that duplication by wiring the natural direction (`backup_now` calls
+  `backup_cron_main()`) would have reintroduced this exact bug. Converted to the same
+  return-a-result shape as `backup_cron_register_main()`, then `backup_now` was made to call
+  it — the duplication is gone *and* the trap it would have sprung is gone with it. Regression
+  test in `tests/run.php` (`assert_function_avoids_cli_only_stdio()`, a shared helper — this
+  is now the second function it guards) covers both.
+- **`apply_patch_main()` (`apply_patch.php`) and `uninstall_main()` (`uninstall.php`) are
+  deliberately left as they are.** Both still write directly to `STDOUT`/`STDERR`. This is a
+  known, accepted shape, not an oversight: nothing in the current design has a plausible reason
+  to call plugin install/removal logic from a web request, and changing code on the
+  install/removal paths — freshly verified working end-to-end in step 7 — for a theoretical
+  concern is a worse trade than leaving a low-probability latent issue alone. **If either of
+  these ever gains a caller from a web-request script, it must be converted to the
+  return-a-result shape FIRST, before that caller is wired in — not after, and not "since it
+  probably still works."**
 
 ## STANDING NOTE — stop layering defensive checks on mechanisms you haven't fully verified
 

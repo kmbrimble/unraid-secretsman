@@ -67,6 +67,28 @@ function scratch_dir(): string
     return $dir;
 }
 
+/**
+ * Guards CLAUDE.md rule 8: a function reachable from both a CLI script and
+ * a web-request script must not touch STDOUT/STDERR directly, since both
+ * are undefined under php-fpm — a real bug this project has already shipped
+ * once (backup_cron_register.php) and deliberately fixed a second time
+ * pre-emptively (backup_cron.php) rather than leave a duplication-driven
+ * trap. Source-level, not behavioral, because tests/run.php always runs
+ * under the CLI SAPI, where STDOUT/STDERR ARE defined — the bug is
+ * invisible to a CLI test suite by construction, which is exactly why it
+ * slipped through the first time.
+ */
+function assert_function_avoids_cli_only_stdio(string $file, string $functionName): void
+{
+    $src = file_get_contents(__DIR__ . '/../' . $file);
+    $start = strpos($src, "function {$functionName}()");
+    $guardStart = strpos($src, "if (realpath(\$_SERVER['SCRIPT_FILENAME']");
+    assert_true($start !== false && $guardStart !== false, "could not locate {$functionName}() or the CLI guard in {$file}");
+    $functionBody = substr($src, $start, $guardStart - $start);
+    assert_true(!str_contains($functionBody, 'STDOUT'), "{$functionName}() in {$file} must not reference STDOUT directly");
+    assert_true(!str_contains($functionBody, 'STDERR'), "{$functionName}() in {$file} must not reference STDERR directly");
+}
+
 function write_store(string $dir, array $data, int $mode = 0600): string
 {
     if (!is_dir($dir)) {
@@ -1162,21 +1184,18 @@ t('cron: backup_cron_register_main() never touches STDOUT/STDERR directly', func
     // where STDOUT/STDERR are undefined — the direct fwrite(STDOUT/STDERR,
     // ...) calls that used to live inside it produced an uncaught "Undefined
     // constant STDOUT" fatal (a live 500 with no useful client message) the
-    // moment a user saved backup settings through the GUI. Fixed by having
-    // the function return a result instead of printing; only the CLI-only
-    // guard at the bottom of the file (which never runs when this file is
-    // require_once'd from a web script) does any printing. This test can't
-    // reproduce the actual failure (tests/run.php always runs under the CLI
-    // SAPI, where STDOUT/STDERR ARE defined — the bug is invisible to a CLI
-    // test suite by construction, which is exactly why it slipped through
-    // the first time), so it guards the source shape directly instead.
-    $src = file_get_contents(__DIR__ . '/../plugin/scripts/backup_cron_register.php');
-    $start = strpos($src, 'function backup_cron_register_main()');
-    $guardStart = strpos($src, "if (realpath(\$_SERVER['SCRIPT_FILENAME']");
-    assert_true($start !== false && $guardStart !== false, 'could not locate the function or the CLI guard');
-    $functionBody = substr($src, $start, $guardStart - $start);
-    assert_true(!str_contains($functionBody, 'STDOUT'), 'backup_cron_register_main() must not reference STDOUT directly');
-    assert_true(!str_contains($functionBody, 'STDERR'), 'backup_cron_register_main() must not reference STDERR directly');
+    // moment a user saved backup settings through the GUI.
+    assert_function_avoids_cli_only_stdio('plugin/scripts/backup_cron_register.php', 'backup_cron_register_main');
+});
+
+t('cron: backup_cron_main() never touches STDOUT/STDERR directly', function () {
+    // Same class of bug, fixed pre-emptively rather than shipped: backup_now
+    // in backup_api.php used to duplicate backup_cron_main()'s steps instead
+    // of calling it, which was the only thing keeping this safe. Resolving
+    // that duplication by having backup_now call backup_cron_main() directly
+    // would have reintroduced the exact STDOUT/STDERR-under-php-fpm bug if
+    // this function still printed instead of returning a result.
+    assert_function_avoids_cli_only_stdio('plugin/scripts/backup_cron.php', 'backup_cron_main');
 });
 
 t('cron: backup_cron_register_main() writes the flash .cron file matching the saved config', function () {

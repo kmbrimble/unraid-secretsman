@@ -2,12 +2,23 @@
 declare(strict_types=1);
 
 /**
- * The script cron actually runs (see backup_cron_register.php for how the
- * schedule line gets there). CLI context, so — unlike backup_api.php —
- * it's fine to use common.php's secretsman_notify(): a scheduled backup
- * that fails should raise a real Unraid notification, since nobody is
- * watching a browser tab when cron fires. Notifies on failure only,
- * matching appdata.backup's own default ("notification: error").
+ * The actual backup logic — called both by cron (via the CLI guard below)
+ * and by backup_api.php's backup_now action, so a manual "Back up now"
+ * click and a scheduled run share exactly one implementation instead of
+ * two copies drifting apart.
+ *
+ * backup_cron_main() deliberately never touches STDOUT/STDERR directly —
+ * both are CLI-SAPI-only constants, undefined under php-fpm (see CLAUDE.md
+ * rule 8 and its dated standing note — this is the same class of bug that
+ * shipped once already in backup_cron_register.php). It returns a result
+ * instead; only the CLI invocation guard at the bottom of this file, which
+ * never runs when this script is require_once'd from a web script, prints
+ * anything. secretsman_notify() (via common.php) IS safe to call from
+ * either context — it uses error_log(), not STDERR — so a scheduled
+ * failure still raises a real Unraid notification when nobody's watching a
+ * browser tab; a manual backup_now failure raises the same notification as
+ * a side effect, which is harmless (in addition to, not instead of, the
+ * error the page shows inline).
  */
 
 $pluginDir = dirname(__DIR__);
@@ -15,13 +26,15 @@ require_once "{$pluginDir}/src/secretsman.php";
 require_once "{$pluginDir}/src/backup.php";
 require_once __DIR__ . '/common.php';
 
-function backup_cron_main(): int
+function backup_cron_main(): array
 {
     $config = secretsman_backup_config_load();
-    $destination = $config['destination'] ?? '';
+    $destination = (string)($config['destination'] ?? '');
     if ($destination === '') {
-        // Not configured — nothing to do, and not a failure worth notifying about.
-        return 0;
+        // Not configured. From cron this isn't a failure worth notifying
+        // about (no notify() call); from backup_now this becomes a clear
+        // inline error via the same message either way.
+        return ['ok' => false, 'message' => 'secretsman: set a destination before backing up'];
     }
 
     $password = secretsman_backup_password_load();
@@ -31,7 +44,7 @@ function backup_cron_main(): int
             'secretsman: no backup password is set. Configure one on the SecretsMan settings page.',
             'warning'
         );
-        return 1;
+        return ['ok' => false, 'message' => 'secretsman: set a backup password before backing up'];
     }
 
     try {
@@ -39,11 +52,11 @@ function backup_cron_main(): int
         $deleted = secretsman_backup_prune($destination, (int)($config['retention'] ?? 3));
         $config['lastRun'] = ['time' => time(), 'ok' => true, 'message' => "backed up via {$result['tool']}"];
         secretsman_backup_config_save($config);
-        fwrite(STDOUT, "secretsman: backup ok: {$result['path']} ({$result['bytes']} bytes)\n");
+        $message = "secretsman: backup ok: {$result['path']} ({$result['bytes']} bytes)";
         if ($deleted) {
-            fwrite(STDOUT, 'secretsman: pruned: ' . implode(', ', $deleted) . "\n");
+            $message .= '; pruned: ' . implode(', ', $deleted);
         }
-        return 0;
+        return ['ok' => true, 'message' => $message, 'result' => $result];
     } catch (SecretsmanError $e) {
         $config['lastRun'] = ['time' => time(), 'ok' => false, 'message' => $e->getMessage()];
         secretsman_backup_config_save($config);
@@ -52,11 +65,12 @@ function backup_cron_main(): int
             $e->getMessage(),
             'alert'
         );
-        fwrite(STDERR, "secretsman: backup failed: {$e->getMessage()}\n");
-        return 1;
+        return ['ok' => false, 'message' => "secretsman: backup failed: {$e->getMessage()}"];
     }
 }
 
 if (realpath($_SERVER['SCRIPT_FILENAME'] ?? '') === __FILE__) {
-    exit(backup_cron_main());
+    $result = backup_cron_main();
+    fwrite($result['ok'] ? STDOUT : STDERR, $result['message'] . "\n");
+    exit($result['ok'] ? 0 : 1);
 }
