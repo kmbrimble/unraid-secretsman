@@ -298,6 +298,33 @@ same way a real boot would. See `docs/phase2-resume.md` for the full incident.
   never including `common.php` (it has no reason to raise an Unraid notification — GUI errors
   go to the user who caused them, in the page). Fix with a one-line `error_log()` swap
   whenever something web-facing actually needs to notify.
+  **CSRF: do not add a plugin-side check.** `webGui/include/local_prepend.php` (the global
+  `auto_prepend_file`) already enforces CSRF on every POST reaching any plugin PHP file — and,
+  critically, it **consumes the token** (`unset($_POST['csrf_token'])`) immediately after
+  validating it. A second check in plugin code reads an already-emptied field and fails on
+  every legitimate request; this shipped once in `store_api.php` and had to be reverted (see
+  the standing note below). The recognisable signature if this class of bug recurs: Unraid's
+  own `csrf_terminate()` calls `exit` **without ever setting an HTTP status code**, so an
+  upstream CSRF failure looks like a `200` with an empty body (a JSON-parse error client-side),
+  never a `403` — a `403` from this endpoint can only be coming from the plugin's own code.
+  Stock precedent confirms the fix: `ipmi/include/ipmi_config.php` has no CSRF-checking code
+  of its own at all, and that's correct, not an oversight.
+
+## STANDING NOTE — stop layering defensive checks on mechanisms you haven't fully verified
+
+Twice now, a check added *in addition to* an Unraid-provided guarantee — believing it was
+extra safety — was the actual cause of a failure, not a hedge against one: the `disks_mounted`
+ordering assumption for `!secretfile` (relied on despite never being tested live — see the
+dated correction below) and `store_api.php`'s redundant CSRF check (added "on top of" the
+webGui's own enforcement, and could never succeed because that enforcement consumes the token
+it was trying to re-check). Both were added out of caution, and both were the bug.
+**When Unraid already provides a guarantee, the correct response is to rely on it and verify
+the guarantee holds — not to add a second, independent mechanism alongside it.** A second
+mechanism doubles the surface for a subtle interaction neither half's author fully modeled,
+and "belt and braces" only works when the belt and the braces don't secretly share a buckle.
+Before adding a check "just in case": find the real stock code path first (read the source,
+as both corrections below eventually did), and confirm the case you're worried about is
+actually possible given what that code does — don't guess at what a safety margin costs.
 
 ## Testing
 

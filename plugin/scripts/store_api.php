@@ -13,6 +13,15 @@ declare(strict_types=1);
  * user who caused it, in the page, not to an Unraid notification), and its
  * STDERR fallback would fatal under php-fpm anyway (STDERR is a CLI-SAPI-only
  * constant — see the known-issue note in CLAUDE.md).
+ *
+ * No CSRF check here, deliberately: webGui/include/local_prepend.php (the
+ * global auto_prepend_file) already enforces CSRF on every POST reaching any
+ * plugin PHP file, and CONSUMES the token (unset($_POST['csrf_token'])) once
+ * it validates. A second check here would read an already-emptied field and
+ * fail on every legitimate request — this is not a hypothetical, it's what
+ * shipped first and had to be reverted. See CLAUDE.md's standing note on
+ * this exact class of mistake (defensive redundancy on a mechanism Unraid
+ * already guarantees).
  */
 
 require_once __DIR__ . '/../src/secretsman.php';
@@ -26,19 +35,6 @@ function respond(array $body): void
 {
     echo json_encode($body);
     exit;
-}
-
-// Explicit CSRF check, on top of (not instead of) the automatic webGui-level
-// enforcement (a global auto_prepend_file checks every POST reaching PHP
-// through the webGui; a global $.ajaxPrefilter appends the token to every
-// jQuery .post() for free). This script grants write access to every secret
-// on the box, so it does not rely solely on an assumption unverifiable from
-// outside a real request.
-$var = @parse_ini_file('/usr/local/emhttp/state/var.ini');
-$csrfToken = is_array($var) ? ($var['csrf_token'] ?? null) : null;
-if ($csrfToken === null || !hash_equals((string)$csrfToken, (string)($_POST['csrf_token'] ?? ''))) {
-    http_response_code(403);
-    respond(['ok' => false, 'error' => 'secretsman: CSRF token mismatch — reload the page and try again']);
 }
 
 if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
