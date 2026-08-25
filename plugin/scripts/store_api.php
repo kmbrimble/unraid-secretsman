@@ -66,26 +66,34 @@ function render_store_html(array $store, array $scan): string
     $html = '';
 
     if ($store === []) {
-        $html .= '<p class="notice">No secrets stored yet — add one above.</p>';
+        $html .= '<p class="notice">No secrets stored yet. Use the form above to add your first one'
+            . ' — namespace, key, and the value you want to protect.</p>';
     } else {
-        $html .= '<div class="TableContainer"><table class="unraid secretsman shift">';
-        $html .= '<thead><tr><th>Key</th><th>Value</th><th>Used by</th><th></th></tr></thead><tbody>';
+        $html .= '<div class="TableContainer"><table class="unraid secretsman shift" style="width:100%">';
+        $html .= '<thead><tr><th style="text-align:left">In use</th><th style="text-align:left">Used by</th>'
+            . '<th style="text-align:left">Key</th><th style="text-align:left">Value</th>'
+            . '<th style="text-align:right">Actions</th></tr></thead><tbody>';
         foreach ($store as $ns => $keys) {
             ksort($keys);
-            $html .= '<tr class="secretsman-ns"><td colspan="4">' . h($ns) . '</td></tr>';
+            $html .= '<tr class="secretsman-ns"><td colspan="5" style="font-weight:bold;background:rgba(128,128,128,0.15);padding-top:0.5em">'
+                . h($ns) . '</td></tr>';
             foreach ($keys as $key => $value) {
                 $usedBy = $scan['usage']["{$ns}/{$key}"] ?? [];
+                $inUse = $usedBy
+                    ? '<span style="color:#2a2" title="Referenced by a saved template">&#10004;</span>'
+                    : '<span style="color:#c33" title="Not referenced by any saved template">&#10008;</span>';
                 $usedByText = $usedBy ? h(implode(', ', $usedBy)) : '&#8212;';
                 $len = strlen($value);
                 $nsAttr = h($ns);
                 $keyAttr = h($key);
                 $html .= '<tr data-ns="' . $nsAttr . '" data-key="' . $keyAttr . '">';
+                $html .= '<td>' . $inUse . '</td>';
+                $html .= '<td>' . $usedByText . '</td>';
                 $html .= '<td>' . h($key) . '</td>';
-                $html .= '<td class="sm-value" data-len="' . $len . '">'
+                $html .= '<td class="sm-value" data-len="' . $len . '" style="word-break:break-all;max-width:20em">'
                     . '<span class="sm-mask">' . str_repeat('&#8226;', 8) . ' (' . $len . ' chars)</span>'
                     . '</td>';
-                $html .= '<td>' . $usedByText . '</td>';
-                $html .= '<td class="sm-actions">'
+                $html .= '<td class="sm-actions" style="text-align:right;white-space:nowrap">'
                     . '<button class="sm-reveal" type="button">Reveal</button> '
                     . '<button class="sm-copy" type="button">Copy token</button> '
                     . '<button class="sm-edit" type="button">Edit</button> '
