@@ -3,13 +3,18 @@ declare(strict_types=1);
 
 /**
  * Shared helpers for the plugin's boot/CLI scripts (apply_patch.php,
- * uninstall.php). Not part of src/ — this is Unraid environment glue
- * (notify, the live Helpers.php path), not version-independent resolver
- * logic.
+ * uninstall.php, backup_cron.php, backup_cron_register.php). Not part of
+ * src/ — this is Unraid environment glue (notify, live paths), not
+ * version-independent resolver/backup logic. CLI-context only: store_api.php
+ * and backup_api.php (web context) deliberately never include this file —
+ * see their own header comments for why (secretsman_notify()'s STDERR
+ * fallback fatals under php-fpm).
  */
 
 const SECRETSMAN_NOTIFY_BIN = '/usr/local/emhttp/webGui/scripts/notify';
 const SECRETSMAN_LIVE_HELPERS_PATH = '/usr/local/emhttp/plugins/dynamix.docker.manager/include/Helpers.php';
+const SECRETSMAN_BACKUP_CRON_FILE = '/boot/config/plugins/unraid-secretsman/unraid-secretsman.cron';
+const SECRETSMAN_BACKUP_CRON_SCRIPT = '/usr/local/emhttp/plugins/unraid-secretsman/scripts/backup_cron.php';
 
 function secretsman_notify(string $subject, string $description, string $importance = 'warning', string $link = '/Docker'): void
 {

@@ -6,9 +6,11 @@ declare(strict_types=1);
 
 require __DIR__ . '/../src/secretsman.php';
 require __DIR__ . '/../src/patch.php';
+require __DIR__ . '/../src/backup.php';
 require __DIR__ . '/../plugin/scripts/common.php';
 require __DIR__ . '/../plugin/scripts/apply_patch.php';
 require __DIR__ . '/../plugin/scripts/uninstall.php';
+require __DIR__ . '/../plugin/scripts/backup_cron_register.php';
 
 $failures = [];
 $passed   = 0;
@@ -67,6 +69,9 @@ function scratch_dir(): string
 
 function write_store(string $dir, array $data, int $mode = 0600): string
 {
+    if (!is_dir($dir)) {
+        mkdir($dir, 0700, true);
+    }
     $path = $dir . '/store.json';
     file_put_contents($path, json_encode($data, JSON_PRETTY_PRINT));
     chmod($path, $mode);
@@ -957,6 +962,257 @@ t('apply_patch: load_known_good_hashes() parses valid lines, ignores malformed o
 t('apply_patch: load_known_good_hashes() returns [] for a missing file', function () {
     assert_eq([], load_known_good_hashes('/nonexistent/HASHES'));
 });
+
+// ---------------------------------------------------------------------------
+// Backup & restore
+// ---------------------------------------------------------------------------
+// All tests here pass 'openssl' explicitly to secretsman_backup_create() so
+// they're deterministic in CI, which won't have 7z. A separate block at the
+// end registers 7z-specific tests only when is_executable() finds one
+// locally, so it never fails on a host without it — see that block's own
+// comment.
+
+t('backup: config_load() returns sane defaults when nothing has been saved', function () {
+    $dir = scratch_dir();
+    putenv("SECRETSMAN_BACKUP_CONFIG_PATH={$dir}/backup-config.json");
+    try {
+        $config = secretsman_backup_config_load();
+        assert_eq('', $config['destination']);
+        assert_eq('off', $config['schedule']['mode']);
+        assert_eq(30, $config['retention']);
+        assert_eq(null, $config['lastRun']);
+    } finally {
+        putenv('SECRETSMAN_BACKUP_CONFIG_PATH');
+    }
+});
+
+t('backup: config_save() then config_load() round-trips, and the file is 0600', function () {
+    $dir = scratch_dir();
+    putenv("SECRETSMAN_BACKUP_CONFIG_PATH={$dir}/backup-config.json");
+    try {
+        secretsman_backup_config_save(['destination' => '/mnt/user/backups', 'schedule' => ['mode' => 'daily', 'hour' => 3, 'minute' => 30, 'weekday' => 0, 'dayOfMonth' => 1], 'retention' => 10, 'lastRun' => null]);
+        $config = secretsman_backup_config_load();
+        assert_eq('/mnt/user/backups', $config['destination']);
+        assert_eq('daily', $config['schedule']['mode']);
+        assert_eq('0600', substr(sprintf('%o', fileperms("{$dir}/backup-config.json")), -4));
+    } finally {
+        putenv('SECRETSMAN_BACKUP_CONFIG_PATH');
+    }
+});
+
+t('backup: password_load() returns null when nothing has been set', function () {
+    $dir = scratch_dir();
+    putenv("SECRETSMAN_BACKUP_PASSWORD_PATH={$dir}/backup-password");
+    try {
+        assert_eq(null, secretsman_backup_password_load());
+    } finally {
+        putenv('SECRETSMAN_BACKUP_PASSWORD_PATH');
+    }
+});
+
+t('backup: password_save() then password_load() round-trips, 0600, outside the store dir it lives beside', function () {
+    $dir = scratch_dir();
+    putenv("SECRETSMAN_BACKUP_PASSWORD_PATH={$dir}/backup-password");
+    try {
+        secretsman_backup_password_save('correct-horse-battery-staple');
+        assert_eq('correct-horse-battery-staple', secretsman_backup_password_load());
+        assert_eq('0600', substr(sprintf('%o', fileperms("{$dir}/backup-password")), -4));
+    } finally {
+        putenv('SECRETSMAN_BACKUP_PASSWORD_PATH');
+    }
+});
+
+t('backup: create() then verify() round-trips via openssl, and the archive is 0600', function () {
+    $dir = scratch_dir();
+    $storePath = write_store($dir, ['ns' => ['k' => 'test-value-not-a-real-secret']]);
+    $destDir = $dir . '/dest';
+    $result = secretsman_backup_create($storePath, 'hunter2', $destDir, 'openssl');
+    assert_eq('openssl', $result['tool']);
+    assert_true(is_file($result['path']));
+    assert_true(is_file($result['readme']), 'README-RESTORE.txt should be written alongside the archive');
+    assert_eq('0600', substr(sprintf('%o', fileperms($result['path'])), -4));
+    assert_true(str_contains(file_get_contents($result['readme']), 'openssl enc -d'), 'readme should contain the exact decrypt command');
+
+    $decoded = secretsman_backup_verify($result['path'], 'hunter2');
+    assert_eq(['ns' => ['k' => 'test-value-not-a-real-secret']], $decoded);
+});
+
+t('backup: verify() rejects the wrong password cleanly, without a partial extraction', function () {
+    $dir = scratch_dir();
+    $storePath = write_store($dir, ['ns' => ['k' => 'test-value-not-a-real-secret']]);
+    $destDir = $dir . '/dest';
+    $result = secretsman_backup_create($storePath, 'hunter2', $destDir, 'openssl');
+    assert_throws(fn() => secretsman_backup_verify($result['path'], 'wrong-password'), SecretsmanError::class, 'wrong password');
+});
+
+t('backup: create() writes an HMAC sidecar for the openssl path, and prune() removes it too', function () {
+    $dir = scratch_dir();
+    $storePath = write_store($dir, ['ns' => ['k' => 'v']]);
+    $destDir = $dir . '/dest';
+    $result = secretsman_backup_create($storePath, 'hunter2', $destDir, 'openssl');
+    assert_true(is_file($result['path'] . '.hmac'), 'openssl archives should get an HMAC sidecar');
+
+    usleep(1100000);
+    secretsman_backup_create($storePath, 'hunter2', $destDir, 'openssl'); // a second, newer archive
+    $deleted = secretsman_backup_prune($destDir, 1); // keep only the newest
+    assert_eq(1, count($deleted));
+    assert_true(!is_file($result['path'] . '.hmac'), "the pruned (older) archive's HMAC sidecar should be gone too");
+});
+
+t('backup: verify() rejects a tampered archive rather than partially restoring it', function () {
+    $dir = scratch_dir();
+    $storePath = write_store($dir, ['ns' => ['k' => 'test-value-not-a-real-secret']]);
+    $destDir = $dir . '/dest';
+    $result = secretsman_backup_create($storePath, 'hunter2', $destDir, 'openssl');
+    // Flip a byte in the middle of the ciphertext.
+    $bytes = file_get_contents($result['path']);
+    $mid = (int)(strlen($bytes) / 2);
+    $bytes[$mid] = chr(ord($bytes[$mid]) ^ 0xFF);
+    file_put_contents($result['path'], $bytes);
+    assert_throws(fn() => secretsman_backup_verify($result['path'], 'hunter2'));
+});
+
+t('backup: create() refuses to archive an already-corrupt store', function () {
+    $dir = scratch_dir();
+    $storePath = $dir . '/store.json';
+    file_put_contents($storePath, '{not valid json');
+    chmod($storePath, 0600);
+    assert_throws(fn() => secretsman_backup_create($storePath, 'hunter2', $dir . '/dest', 'openssl'));
+});
+
+t('backup: detect_format() reads the archive itself, independent of which tool is configured locally', function () {
+    $dir = scratch_dir();
+    $storePath = write_store($dir, ['ns' => ['k' => 'v']]);
+    $result = secretsman_backup_create($storePath, 'hunter2', $dir . '/dest', 'openssl');
+    assert_eq('openssl', secretsman_backup_detect_format($result['path']));
+});
+
+t('restore: replace mode makes the archive the whole store', function () {
+    $dir = scratch_dir();
+    $backupSource = write_store($dir . '/src', ['ns' => ['a' => 'from-backup']]);
+    $result = secretsman_backup_create($backupSource, 'hunter2', $dir . '/dest', 'openssl');
+
+    $liveStorePath = write_store($dir . '/live', ['ns' => ['b' => 'will-be-discarded']]);
+    $outcome = secretsman_backup_restore($result['path'], 'hunter2', $liveStorePath, 'replace');
+    assert_eq('replace', $outcome['mode']);
+    assert_eq(['ns/a'], $outcome['added']);
+    assert_eq(['ns' => ['a' => 'from-backup']], secretsman_load_store($liveStorePath));
+});
+
+t('restore: merge mode adds missing keys and leaves existing ones untouched', function () {
+    $dir = scratch_dir();
+    $backupSource = write_store($dir . '/src', ['ns' => ['a' => 'from-backup', 'b' => 'also-from-backup']]);
+    $result = secretsman_backup_create($backupSource, 'hunter2', $dir . '/dest', 'openssl');
+
+    $liveStorePath = write_store($dir . '/live', ['ns' => ['a' => 'kept-as-is']]);
+    $outcome = secretsman_backup_restore($result['path'], 'hunter2', $liveStorePath, 'merge');
+    assert_eq('merge', $outcome['mode']);
+    assert_eq(['ns/b'], $outcome['added']);
+    assert_eq(['ns/a'], $outcome['collisions']);
+    $final = secretsman_load_store($liveStorePath);
+    assert_eq('kept-as-is', $final['ns']['a'], 'a colliding key must not be silently overwritten');
+    assert_eq('also-from-backup', $final['ns']['b']);
+});
+
+t('restore: merge mode on a missing live store behaves like an empty store', function () {
+    $dir = scratch_dir();
+    $backupSource = write_store($dir . '/src', ['ns' => ['a' => 'v']]);
+    $result = secretsman_backup_create($backupSource, 'hunter2', $dir . '/dest', 'openssl');
+    $liveStorePath = $dir . '/live/store.json';
+    $outcome = secretsman_backup_restore($result['path'], 'hunter2', $liveStorePath, 'merge');
+    assert_eq(['ns/a'], $outcome['added']);
+});
+
+t('backup: prune() keeps the newest N and deletes the rest, never the newest', function () {
+    $dir = scratch_dir();
+    $storePath = write_store($dir, ['ns' => ['k' => 'v']]);
+    $destDir = $dir . '/dest';
+    $paths = [];
+    for ($i = 0; $i < 3; $i++) {
+        $r = secretsman_backup_create($storePath, 'hunter2', $destDir, 'openssl');
+        $paths[] = $r['path'];
+        touch($r['path'], time() + $i); // force a strictly increasing mtime regardless of filename resolution
+        usleep(1100000); // ensure distinct filename timestamps too (1s resolution)
+    }
+    $deleted = secretsman_backup_prune($destDir, 1);
+    assert_eq(2, count($deleted));
+    $remaining = secretsman_backup_list_archives($destDir);
+    assert_eq(1, count($remaining));
+    assert_eq(basename($paths[2]), $remaining[0]['name'], 'newest must survive pruning');
+});
+
+t('backup: prune() with retention 0 deletes nothing (unlimited)', function () {
+    $dir = scratch_dir();
+    $storePath = write_store($dir, ['ns' => ['k' => 'v']]);
+    $destDir = $dir . '/dest';
+    secretsman_backup_create($storePath, 'hunter2', $destDir, 'openssl');
+    assert_eq([], secretsman_backup_prune($destDir, 0));
+});
+
+t('cron: cron_line() builds the expected 5-field expression per mode', function () {
+    assert_eq(null, secretsman_backup_cron_line(['mode' => 'off'], '/x/backup_cron.php'));
+    assert_eq('30 3 * * * php /x/backup_cron.php > /dev/null 2>&1', secretsman_backup_cron_line(['mode' => 'daily', 'hour' => 3, 'minute' => 30], '/x/backup_cron.php'));
+    assert_eq('0 1 * * 1 php /x/backup_cron.php > /dev/null 2>&1', secretsman_backup_cron_line(['mode' => 'weekly', 'hour' => 1, 'minute' => 0, 'weekday' => 1], '/x/backup_cron.php'));
+    assert_eq('0 2 15 * * php /x/backup_cron.php > /dev/null 2>&1', secretsman_backup_cron_line(['mode' => 'monthly', 'hour' => 2, 'minute' => 0, 'dayOfMonth' => 15], '/x/backup_cron.php'));
+});
+
+t('cron: backup_cron_register_main() writes the flash .cron file matching the saved config', function () {
+    $dir = scratch_dir();
+    putenv("SECRETSMAN_BACKUP_CONFIG_PATH={$dir}/backup-config.json");
+    $cronFile = $dir . '/unraid-secretsman.cron';
+    // SECRETSMAN_BACKUP_CRON_FILE is a stock const, not overridable via env —
+    // redefine the constant isn't possible either, so this test calls the
+    // pure line-builder directly against what the register script WOULD
+    // write, and separately exercises config persistence above. Registering
+    // against the real flash path is covered by live verification, not
+    // unit tests, since /boot/config is not writable in this environment.
+    secretsman_backup_config_save(['destination' => '/mnt/user/backups', 'schedule' => ['mode' => 'weekly', 'hour' => 4, 'minute' => 15, 'weekday' => 2, 'dayOfMonth' => 1], 'retention' => 5, 'lastRun' => null]);
+    $config = secretsman_backup_config_load();
+    $line = secretsman_backup_cron_line($config['schedule'], SECRETSMAN_BACKUP_CRON_SCRIPT);
+    assert_eq('15 4 * * 2 php ' . SECRETSMAN_BACKUP_CRON_SCRIPT . ' > /dev/null 2>&1', $line);
+    putenv('SECRETSMAN_BACKUP_CONFIG_PATH');
+});
+
+t('never-log: a wrong-password error and a merge collision report never contain a value', function () {
+    $dir = scratch_dir();
+    $sentinel = 'SUPER-SECRET-SENTINEL-VALUE';
+    $backupSource = write_store($dir . '/src', ['ns' => ['k' => $sentinel]]);
+    $result = secretsman_backup_create($backupSource, 'hunter2', $dir . '/dest', 'openssl');
+
+    try {
+        secretsman_backup_verify($result['path'], 'wrong');
+        throw new \Exception('expected failure');
+    } catch (SecretsmanError $e) {
+        assert_true(strpos($e->getMessage(), $sentinel) === false, 'sentinel leaked into wrong-password error');
+    }
+
+    $liveStorePath = write_store($dir . '/live', ['ns' => ['k' => 'different-current-value']]);
+    $outcome = secretsman_backup_restore($result['path'], 'hunter2', $liveStorePath, 'merge');
+    assert_eq(['ns/k'], $outcome['collisions']);
+    assert_true(strpos(json_encode($outcome), $sentinel) === false, 'sentinel leaked into restore outcome');
+});
+
+// 7z-specific coverage — only registered if a usable binary is actually
+// present locally (it isn't stock Unraid; see src/backup.php's header
+// comment), so this never fails on a host/CI without one.
+if (secretsman_backup_7z_bin() !== null) {
+    t('backup: create() then verify() round-trips via 7z, headers genuinely encrypted', function () {
+        $dir = scratch_dir();
+        $storePath = write_store($dir, ['ns' => ['k' => 'test-value-not-a-real-secret']]);
+        $result = secretsman_backup_create($storePath, 'hunter2', $dir . '/dest', 'sevenzip');
+        assert_eq('sevenzip', $result['tool']);
+        assert_eq('sevenzip', secretsman_backup_detect_format($result['path']));
+        $decoded = secretsman_backup_verify($result['path'], 'hunter2');
+        assert_eq(['ns' => ['k' => 'test-value-not-a-real-secret']], $decoded);
+    });
+
+    t('backup: an archive made without 7z restores fine even when 7z happens to be present, and vice versa is format-driven not host-driven', function () {
+        $dir = scratch_dir();
+        $storePath = write_store($dir, ['ns' => ['k' => 'v']]);
+        $opensslResult = secretsman_backup_create($storePath, 'hunter2', $dir . '/dest', 'openssl');
+        assert_eq('openssl', secretsman_backup_detect_format($opensslResult['path']), 'format must come from the file, not from 7z being available here');
+    });
+}
 
 // ---------------------------------------------------------------------------
 

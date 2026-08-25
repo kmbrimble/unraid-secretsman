@@ -319,6 +319,57 @@ same way a real boot would. See `docs/phase2-resume.md` for the full incident.
   never a `403` — a `403` from this endpoint can only be coming from the plugin's own code.
   Stock precedent confirms the fix: `ipmi/include/ipmi_config.php` has no CSRF-checking code
   of its own at all, and that's correct, not an oversight.
+- **Phase 4 — Backup & restore (this repo, current state), before 1.0.0.** Prompted by a real
+  gap: `/mnt/user/appdata/.secrets/` is dotfile-prefixed, which common appdata-backup tooling
+  routinely skips, so the store had no copy anywhere. `src/backup.php` (version-independent,
+  testable the same way `patch.php` is) does archive create/verify/restore/prune;
+  `plugin/scripts/backup_api.php` (GUI backend, same shape as `store_api.php` — no CSRF check,
+  for the same reason), `backup_download.php` (streaming download, `Content-Disposition` +
+  `readfile()`, never stages the archive in the web-servable webroot), `backup_cron.php` (the
+  script cron actually runs), and `backup_cron_register.php` (regenerates the flash `.cron`
+  file from `backup-config.json` and calls `update_cron` — called both on config save and from
+  the `.plg`'s install block on every boot).
+  **Archive format is detected from the file at restore time, never from what's installed
+  locally** — an archive made where 7z was available may need restoring where it isn't.
+  7z (AES-256, encrypted headers) is used when present; it is confirmed **not stock Unraid**
+  (only present via the third-party `zip_manager` plugin on the recon host) — the guaranteed
+  fallback is `tar` + `openssl enc -aes-256-cbc -pbkdf2`, both stock. That fallback needed a
+  fix beyond what was planned: **this host's `openssl enc` refuses AEAD ciphers outright**
+  ("AEAD ciphers not supported", confirmed on both 3.0.x and 3.5.x), so GCM was not an option,
+  and plain CBC has no integrity check — confirmed live by a test that flipped a byte and
+  found decryption could still "succeed" with garbled output undetected outside the payload
+  region. Fixed with an HMAC-SHA256 sidecar (independently keyed via PBKDF2 from the same
+  password) checked before every decrypt attempt, rather than changing the ciphertext format
+  and breaking the plain `openssl enc -d` one-liner the fallback exists to keep working.
+  **The archive password lives beside `store.json`** (`/mnt/user/appdata/.secrets/backup-password`,
+  outside flash, `root:root 0600`) — not in the store itself (circular: you'd need the store to
+  restore the store) and not on flash (would put the one key that decrypts every secret
+  exactly where the whole plugin exists to keep secrets out of). Documented plainly, not
+  papered over: root on this host can already read `store.json` directly, so this adds no new
+  exposure — the password's actual job is protecting the archive once it leaves the host.
+  Non-sensitive config (destination, schedule, retention, last-run status) lives on flash at
+  `backup-config.json`, same posture as every other piece of this plugin's config.
+  **Scheduling verified, not assumed:** `/etc/cron.d` is Unraid's RAM rootfs, wiped every
+  boot — confirmed live (`rootfs on / type rootfs`). Only the flash `.cron` file persists.
+  `appdata.backup`'s own changelog documents losing exactly this ("Scheduling got lost after
+  reboot") from trusting a stale file instead of regenerating it; this plugin copies its
+  "regenerate from config every time, never trust the stored artifact" fix. No
+  `event/disks_mounted` hook was added for this — `update_cron` only touches `/boot/config`
+  and `/etc/cron.d`, neither needing the array mounted, so the `.plg`'s existing every-boot
+  install block is sufficient on its own (see the standing note below on not layering a second
+  mechanism where one already-verified one covers it).
+  Restore is two modes, not one: **replace** (the archive becomes the store, disaster
+  recovery) and **merge** (add-only; a key present in both is left untouched and reported as a
+  collision by name, never silently resolved in either direction). Both validate through
+  `secretsman_load_store()` before ever touching the live store — the same validator the
+  resolver itself uses, nothing re-implemented.
+  Does not touch `src/patch.php`, the `Helpers.php` insertion point, or `secretsman_resolve()`.
+  The `RECOVERY.md` drill was not re-run — this phase touches no stock OS file — but the
+  clean-slate install/remove re-verification standing rule was, since `build-plugin.sh` and
+  the `.plg` both changed again; the `.plg`'s remove block now deregisters the cron entry
+  *before* `rm -rf &plgPATH;` deletes the flash config that registration depends on, flagged
+  specifically since a forgotten deregistration step is exactly the kind of thing that's
+  silently lost (same category as the `-x`/`-f` bug step 7 caught).
 
 ## STANDING NOTE — stop layering defensive checks on mechanisms you haven't fully verified
 

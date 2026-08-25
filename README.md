@@ -68,6 +68,27 @@ match a stored secret, or doesn't parse at all — the two mistakes that used to
 The store also stays hand-editable at `/mnt/user/appdata/.secrets/store.json` — the page is an
 alternative, not a replacement.
 
+## Backup & restore
+
+`/mnt/user/appdata/.secrets/` is dotfile-prefixed, which common appdata-backup tooling
+routinely skips — without this, the store had no copy anywhere. The same Settings page has a
+**Backup & Restore** section: set a destination and a password, then back up on a schedule or
+on demand. Archives are encrypted (7-Zip/AES-256 if you happen to have 7-Zip installed — not
+stock Unraid — otherwise `tar` + OpenSSL AES-256, both always present) and every archive is
+decrypted and validated immediately after creation, before being considered a successful
+backup. A plain-text `README-RESTORE.txt` is written alongside every archive with the exact
+restore command for that specific file — readable without this plugin, in case you find it
+somewhere with no other context.
+
+**The archive password is not stored in the archive, and not on flash.** It lives beside
+`store.json` itself, `root:root 0600`. Stated plainly: root on this Unraid box can already read
+`store.json` directly, so this doesn't add a new way in — the password's actual job is
+protecting the archive once it leaves this host (downloaded, copied elsewhere).
+
+Restoring supports two modes: **replace** (the archive becomes the store, full disaster
+recovery) or **merge** (only adds keys that aren't already present — anything already in the
+store is left untouched, never silently overwritten).
+
 ## Compatibility
 
 Verified on **Unraid 7.3.1**. Other versions are not assumed compatible: the patch is
@@ -134,9 +155,11 @@ resolved at container-create time in the GUI, never at boot.
 
 ## Status
 
-Functional and verified live: the resolver, the boot-time patch, the Settings GUI, and clean
-removal (install → remove → confirm stock `Helpers.php` returns byte-for-byte) all work on the
-recon host (Unraid 7.3.1). **Not yet tagged as a release** — see `CLAUDE.md`'s Phase roadmap.
+Functional and verified live: the resolver, the boot-time patch, the Settings GUI, clean
+removal (install → remove → confirm stock `Helpers.php` returns byte-for-byte), and backup
+create/verify/prune all work on the recon host (Unraid 7.3.1). Scheduled-backup durability
+across a real reboot, and a full restore rehearsal, are the last checks before a release — see
+`CLAUDE.md`'s Phase roadmap. **Not yet tagged as a release.**
 
 ## License
 
