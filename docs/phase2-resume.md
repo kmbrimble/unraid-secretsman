@@ -115,6 +115,59 @@ to install `auditd` for PID attribution), not just "it hasn't happened again sin
 
 ---
 
+## Update — original anomaly has not recurred; a second, benign-shaped event was caught instead
+
+**The original invisible-then-vanished signature has not recurred.** A full watch period on
+`secretsman-fswatch` recorded every deletion since setup with the complete, orderly `docker rm`
+teardown sequence preceding it (`checkpoints/`, `hosts`, `resolv.conf`, `hostname`, `mounts/`,
+log file, hash, `hostconfig.json`, `config.v2.json`, then the directory) — none of them showed
+the original pattern of a container already invisible to `docker ps -a`/`docker inspect` whose
+directory persisted and then vanished with no such sequence. This is evidence *for* the boot-time
+dockerd network-reconciliation-race hypothesis and *against* an ongoing live corruption/deletion
+process: it materially lowers the risk of proceeding with Phase 2 once this thread is closed.
+
+**A second, different-shaped event was caught: three short-lived containers created and cleanly
+removed within 7 seconds of each other, 2026-08-25 01:10:30–01:10:37 UTC (11:10:30–11:10:37
+Brisbane time, confirmed via `timeZone="Australia/Brisbane"` in `ident.cfg`, UTC+10, no DST).**
+Each went through a complete, textbook `docker run` → `docker rm` lifecycle — this is *not* the
+anomaly, just an unidentified one, since the teardown deletes `config.v2.json` as its last step,
+taking the name/image with it. Investigated three ways:
+
+1. **`docker events` replay** — dockerd's in-memory event buffer had already rolled past
+   01:10 UTC by the time this was checked (evicted by ordinary event volume — dozens of
+   containers' healthchecks fire every few seconds); `docker events --since ... --until ...`
+   for that window returned nothing. Dead end for this specific occurrence.
+2. **Scheduled-task correlation — nothing lines up.** Checked every `.cron` file across
+   `/boot/config/plugins/` directly: `ca.update.applications` docker-autoupdate runs `0 1 * * *`
+   (01:00, not 11:10), `appdata.backup` runs `45 1 * * 1` (Mondays only), `ca.mover.tuning`
+   monthly, `UnraidConfigGuardian`'s own internal cron `0 2 * * 0` (Sundays), the per-minute
+   `dynamix/scripts/monitor` job contains no `docker run`/`exec`/`rm` calls at all (grepped
+   directly). `UnraidConfigGuardian` — the one container with the docker socket mounted — logged
+   nothing in that window (`docker logs --since/--until` empty) and its own visible behavior is
+   template-caching from local files, not container spawning. **No scheduled task on this host
+   explains these three containers.** Still unidentified.
+3. **Live capture put in place for next time:** a second standalone container,
+   `secretsman-events-watch` (official `docker:cli` image, **not** privileged, read-only bind of
+   `/var/run/docker.sock`, no other host access), runs `docker events` continuously to
+   `/mnt/user/appdata/claude-code/config/secretsman-events.log`, `restart=unless-stopped`. The
+   next occurrence will be captured with name, image, and full labels before any removal can
+   delete that information — closes the exact evidence gap that made this occurrence
+   unidentifiable.
+
+**Two watchers now running, both plain non-privileged containers, read-only where possible:**
+`secretsman-fswatch` (filesystem, `/mnt/user/appdata/claude-code/config/secretsman-fswatch.log`)
+and `secretsman-events-watch` (docker event stream,
+`/mnt/user/appdata/claude-code/config/secretsman-events.log`). Check both before doing anything
+else next session, and before step 7.
+
+**Open question for you:** these three containers are currently unidentified — not confirmed
+benign, not confirmed suspicious. Worth a look next time you're at the GUI/SSH in case you
+recognize the pattern (something you run manually around that time of day, a browser tab left
+open polling something, a phone app), since neither the event buffer nor any scheduled task on
+the host accounts for it.
+
+---
+
 ## Superseded below — round-3 install completion detail (still accurate, kept for reference)
 
 Since the round-2 update further down, the `.plg` install bug was found, fixed, and the full
