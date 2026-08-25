@@ -168,6 +168,77 @@ the host accounts for it.
 
 ---
 
+## DECISION — Phase 2 step 7 (plugin removal / stock-revert verification) is DEFERRED, not done
+
+**The plugin is staying installed.** It works, `!secret` resolution is proven end-to-end, and
+it's in active use — there is no reason to remove it right now. The clean-removal /
+revert-to-stock verification that was originally step 7 is **deferred to whenever there's an
+actual reason to remove it**, not skipped. See the CLAUDE.md note added alongside this: that
+path (`unraid-secretsman.plg`'s `Method="remove"` block, `uninstall.php`, the stock-hash
+revert) has **never been exercised on the live host** and must not be assumed to work until it
+is.
+
+## Next reboot's real purpose: prove `!secretfile` repopulation timing — the one thing left
+
+Everything needed is staged and verified pre-reboot, right now:
+
+- **`secretsman-smoketest` recreated via the real code path** — not by hand. Ran
+  `live_create.php` (the same harness from earlier Gate-2 rounds) via `nsenter` into the host's
+  PHP against the live, patched `Helpers.php`: `xmlToCommand()` → sentinel confirmed absent from
+  `$cmd` (`SENTINEL_IN_CMD=no`) → `execCommand()` → `docker start`. Verified: container `Up`,
+  bind mount `/run/secretsman/files/secretsman-smoketest/throwaway-key ->
+  /run/secrets/throwaway-key (ro)`, source file `0400 root:root`, `docker exec
+  secretsman-smoketest cat /run/secrets/throwaway-key` → exact match
+  `smoketest-value-not-a-real-secret`. Store entry, template, and `unraid-autostart` entry were
+  all already in place from the prior round (untouched by the investigation) — confirmed intact
+  before recreating. **Autostart enabled**, so this reboot exercises the full `disks_mounted` →
+  repopulate → docker-autostart race, not just the re-patch.
+- **Both watchers confirmed running with `restart=unless-stopped`** immediately before this
+  write: `secretsman-fswatch` and `secretsman-events-watch`, both `Status=running`. This policy
+  restarts them on daemon/host boot unless someone explicitly stopped them — but that's a
+  config-level guarantee, not yet a *proven* one. **Post-reboot check #1, below, is confirming
+  they actually came back**, since that's how a recurrence of either anomaly gets caught.
+- **dockerd log-level change: prepared, still not applied.** You're applying it yourself at
+  this reboot, per the earlier prep note (`/etc/rc.d/rc.docker`, `fatal` → `info` on the
+  `DOCKER_OPTS="--log-level=fatal $DOCKER_OPTS"` line) — that's the whole point of choosing this
+  reboot for it, since docker is stopping anyway. Not touched by me.
+
+### Post-reboot checks, in order
+
+1. **Watchers survived**: `docker ps --filter name=secretsman-fswatch --filter
+   name=secretsman-events-watch` — both should show `Up`, and `docker inspect ... State.StartedAt`
+   should be at/after this boot, not stale from before it (i.e. confirm they actually restarted,
+   not that docker merely still remembers them from a corrupted pre-reboot state — check for a
+   fresh `StartedAt` timestamp specifically).
+2. **Repopulation timing**: before checking the container, check
+   `/run/secretsman/files/secretsman-smoketest/throwaway-key` exists with the right content and
+   `0400` mode. Compare its timestamp/existence against `secretsman-smoketest`'s own start
+   attempt in syslog — the design claim is that `disks_mounted` (repopulate) completes and is
+   confirmed present *before* `rc.docker`'s autostart loop ever reaches this container, which is
+   what the native `container_paths_exist()` check enforces. If the container is `Up` with the
+   correct secret content, this is proven. If it's held back (native check refusing it because
+   the path was missing at check-time), that's a repopulation-timing failure — read
+   `plugin/scripts/repopulate.php`'s own header for what that means.
+3. **`secretsman-smoketest` itself**: `Up`, `docker exec ... cat /run/secrets/throwaway-key` →
+   `smoketest-value-not-a-real-secret`, no other errors.
+4. **Patch re-applied**: same as every prior round — hash `cdb8204eb82b489d24ecabf906f858ac` (or
+   confirm freshly if the reference copy changes), exactly 1 marker, `plugins-error/` clean.
+5. **What the new `info`-level dockerd log captured at boot**: this is new. Read the boot-time
+   dockerd log lines (wherever `info` level routes — likely still `/boot/logs/syslog` if
+   Unraid's own syslog pipeline captures dockerd's stdout/stderr, worth confirming where it
+   actually lands) for anything around the container-network-restore phase (the
+   `07:59:58`-equivalent moment from the last two boots) — specifically whether it now names
+   *what* it's doing when a nil-RWLayer or reconciliation event happens, not just that the event
+   category still occurs. This is the direct payoff of the log-level change.
+6. **Evidence containers untouched**: ESPHome, Immich-Kiosk, Overseerr, Lidarr — confirm still
+   exactly as left (not auto-recovered, not further corrupted) unless you've decided otherwise
+   by then.
+
+**Step 7 (removal/stock-revert verification) stays out of scope for this reboot and for the
+foreseeable future** — see the DECISION section above.
+
+---
+
 ## Superseded below — round-3 install completion detail (still accurate, kept for reference)
 
 Since the round-2 update further down, the `.plg` install bug was found, fixed, and the full

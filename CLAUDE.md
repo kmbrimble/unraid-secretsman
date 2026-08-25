@@ -212,6 +212,14 @@ same way a real boot would. See `docs/phase2-resume.md` for the full incident.
   `xmlToCommand()` (via the staging harness bootstrap) against a fixture template and asserts
   the sentinel value from a fixture store appears nowhere in the returned `$cmd`. This runs
   against the patched function's real return value on the real host, not a mock of it.
+  **Clean removal / revert-to-stock is UNVERIFIED and deliberately DEFERRED, not skipped.**
+  `Helpers.php` patching, boot-time re-patch, and `!secretfile` repopulation timing have all
+  been proven live on the real host (see `docs/phase2-resume.md`) — but the `.plg`'s
+  `Method="remove"` block and `scripts/uninstall.php` have never once been run against the live
+  install, because the plugin works and stays installed. Do not assume that path works just
+  because the install path does; it needs the same real-mechanism verification (clean slate,
+  actual `plugin remove`, confirm stock hash returns) before it can be trusted, whenever there's
+  an actual reason to remove it.
 - **Phase 3 (not yet scoped) — GUI page** for managing the store (add/edit/remove secrets)
   without hand-editing `store.json` over SSH.
 
