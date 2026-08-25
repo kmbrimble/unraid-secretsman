@@ -1,6 +1,89 @@
-# Phase 2 resume brief — PAUSED pending a live data-loss investigation unrelated to secretsman
+# Phase 2 resume brief — PAUSED: the repopulation-ordering design is broken, not just unproven
 
-## STATUS AS OF THE SECOND GATE-2 REBOOT (2026-08-25) — read this section only
+## CORRECTION (2026-08-25, third Gate-2 reboot) — read this first, it overrides earlier sections
+
+**The `disks_mounted`-before-`docker_started` guarantee is DISPROVEN, not merely untested.**
+Phase 0 established it by reading `emhttp_event`'s and `rc.docker`'s source (see CLAUDE.md
+"Array-start hook"). The first real end-to-end test broke it: `secretsman-smoketest`'s
+`!secretfile` bind source was still missing when `rc.docker`'s autostart loop reached it —
+Docker auto-vivified the missing path **as an empty directory** at `docker start` time, which
+then failed OCI runtime init (`mount a directory onto a file`, exit 127) because the container's
+stored mount spec expected a regular file. No syslog evidence exists either way for whether
+`scripts/repopulate.php` (the `disks_mounted` hook) ran at all, ran and errored, or ran and lost
+a race — `emhttp_event` does not route event-script stdout/stderr anywhere durable, so this
+question was unanswerable after the fact. **Do not re-derive the old assumption from Phase 0's
+recon notes — that source-reading conclusion has since been falsified by a live test.** See
+CLAUDE.md's own correction note for the permanent record.
+
+**`container_paths_exist()` is confirmed insufficient for `!secretfile`, independent of the
+above.** It checks only existence, not type. Docker's own missing-bind-source auto-vivification
+(always a directory) defeats it structurally — the check sees "something is there" and lets
+`docker start` proceed straight into the OCI type-mismatch. Deferring `!secretfile`'s fail-closed
+property to this native check (a Phase 2 design decision) was wrong; it never covered this case.
+
+**Consequence for what `!secretfile` can honestly promise right now: it cannot guarantee
+repopulation-before-autostart, and it can start a container against a wrong/missing secret
+source without visibly blocking it.** Until the redesign below ships, `!secretfile` on an
+autostarting container is UNSAFE to rely on — this must be stated plainly in `README.md`'s
+SECURITY section, not implied as solved. `!secret` (env-file, at container-create time in the
+GUI, not at boot) is unaffected — this whole failure class is specific to `!secretfile`'s
+boot-time repopulation path.
+
+The rc.docker dockerd log-level edit (prepared during the second-reboot investigation) has now
+been **applied live** (`--log-level=fatal` → `--log-level=info` at `/etc/rc.d/rc.docker:128`),
+ahead of the next boot, so it's in place when the redesign below is tested. It is a stock file
+restored from the OS image every boot, so this is a one-boot-only change unless re-applied.
+
+### Redesign plan (proposed, NOT implemented — this is the next work, not done)
+
+**1. Replace the `disks_mounted` event hook with a synchronous call inside `rc.docker` itself.**
+Cross-process/cross-daemon event ordering (`emhttpd`'s dispatch of `disks_mounted` before
+`docker_started`) is exactly the assumption that just broke, and it's unfalsifiable after the
+fact because nothing logs it. A same-script, same-shell call has no such gap: patch `rc.docker`
+(same checksum-guarded, marker-delimited, per-version-hash-gated mechanism already used for
+`Helpers.php` — rule 4) to invoke `scripts/repopulate.php` synchronously, in the `start)` case,
+*before* the autostart loop reaches `container_paths_exist()`/`docker start` for any container.
+This makes "repopulation happens before autostart" true by construction (sequential execution
+in one script) rather than an inference about daemon event order. The store's own availability
+at that point (i.e., is `/mnt/user` mounted yet) becomes the only remaining assumption, and it's
+directly checkable in the same way `repopulate.php` already checks the store today —
+`secretsman_load_store()` throwing is already a fail-closed, already-handled path (systemic
+notification, all `!secretfile` candidates held back), so this isn't a new gap, just a smaller
+and more directly verifiable one than the ordering assumption it replaces.
+Proposal: drop the `disks_mounted` event registration entirely rather than keep both — it
+provided no verifiable benefit this round and keeping an unverifiable second mechanism around
+just re-creates the "can't tell if it fired" problem it's meant to solve. Open to being
+overruled on this if there's a reason to want defense-in-depth here.
+
+**2. Make repopulation log its own execution, durably, unconditionally.** Every invocation
+(success, partial failure, or PHP fatal) writes through `logger -t secretsman-repopulate` (lands
+in `/var/log/syslog`, already mirrored to flash) — candidates found, per-key
+success/failure, and a clear "completed" line. A crash before that point is itself informative
+(the last logged step tells you where it died) — this directly answers the visibility gap: next
+time, "did it fire" stops being an inference.
+
+**3. Fix `container_paths_exist()` to verify type, not just existence, for `!secretfile`
+sources.** Same `rc.docker` patch as (1): for any bind-mount source under
+`$runtimeRoot/files/` (i.e., a secretsman-managed path — identifiable by the path prefix, not
+by trusting metadata Docker itself controls), additionally require: is a regular file (not a
+directory, not a symlink), non-empty, mode exactly `0400`. Any failure is treated as "does not
+exist" for the purposes of the existing hold-back behavior — no new blocking mechanism, just a
+correct definition of "exists" fed into the one that's already there. This specifically closes
+the observed failure: Docker's auto-vivified directory now fails the check and the container is
+never `docker start`-ed at all, instead of being started straight into an OCI failure.
+Content-hash verification was considered and rejected as unnecessary — a regular-file-with-mode
+check is already sufficient to distinguish "repopulated" from "Docker's auto-vivified stand-in,"
+which is the only failure mode observed or anticipated.
+
+**Cost of this design, stated plainly:** it widens the patch layer from one stock file
+(`Helpers.php`) to two (`rc.docker`), which is a real increase in surface area and risk versus
+Phase 0's "single insertion point" property. Per CLAUDE.md rule 7, **this requires the
+`RECOVERY.md` drill to be re-run and confirmed working before it ships**, in addition to (not
+instead of) the existing `Helpers.php` drill.
+
+---
+
+## STATUS AS OF THE SECOND GATE-2 REBOOT (2026-08-25) — superseded by the correction above
 
 **Boot-time re-patch: PROVEN.** `.plg` reinstalled cleanly this boot (`Helpers.php patched
 (was 9a45421b387b733ad260e204308baa69)`), live hash confirmed `cdb8204eb82b489d24ecabf906f858ac`,

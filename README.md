@@ -100,6 +100,15 @@ it into an environment variable — which is exactly the `_FILE` / `FILE__` conv
   environment variable at all — only a file path does — so it closes both categories above:
   `docker inspect` and `/proc/<pid>/environ` never see it either. Use it for anything that
   supports the `_FILE` convention.
+- **`!secretfile` on an autostarting container is currently UNSAFE — do not rely on it yet.**
+  Its bind-mount source lives on tmpfs and has to be rewritten on every boot, before Docker
+  autostarts the container, and a live test (2026-08-25) showed this repopulation is **not
+  currently guaranteed to finish first**: Docker can auto-create the missing path as an empty
+  directory and start the container against it, which fails instead of being safely held back.
+  This is a real, open design gap, not a hedge — see `CLAUDE.md`'s correction note and
+  `docs/phase2-resume.md` for the incident and the fix in progress. Until it's resolved, only use
+  `!secretfile` on containers you start manually after confirming the secret file is in place.
+  `!secret` (resolved once, at container-create time in the GUI) is not affected by this gap.
 - **This plugin patches OS files.** It surgically modifies
   `/usr/local/emhttp/plugins/dynamix.docker.manager/include/Helpers.php`, a stock Unraid file
   that is restored from the OS image on every boot, which is why the patch has to reapply at

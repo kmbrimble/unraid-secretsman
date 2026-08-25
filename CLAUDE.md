@@ -75,7 +75,32 @@ Host: Unraid 7.3.1, kernel 6.18.33, PHP 8.4.21.
     when re-run for the same container/key — see the "idempotent" test in `tests/run.php` — since
     repopulation calls the same materialisation path a second time.
 
-## Array-start hook (Phase 2a recon, 2026-08-25, read-only against the live host)
+## CORRECTION — the array-start hook design below is DISPROVEN (2026-08-25, third Gate-2 reboot)
+
+**Do not treat the "Array-start hook" section below as settled design.** It was derived entirely
+by reading vendor source (Phase 2a recon), never by a live test — and the first live test broke
+it. On the third Gate-2 reboot, `secretsman-smoketest`'s `!secretfile` bind source was still
+missing when `rc.docker`'s autostart loop reached it: Docker auto-vivified the missing path as
+an empty directory, and the container failed OCI init (mount type mismatch, exit 127) instead of
+being held back. There is no syslog evidence either way for whether the `disks_mounted` hook
+(`scripts/repopulate.php`) ran, errored, or lost a race — `emhttp_event` doesn't route
+event-script output anywhere durable, so Phase 2a's ordering guarantee is **unfalsifiable by
+inspection and now falsified by test.** Full incident and the resulting redesign plan are in
+`docs/phase2-resume.md`'s "CORRECTION" section (top of file) — treat that as current design,
+this section below as historical context for why the (now-disproven) choice was made.
+
+**Separately, and independent of the above: `container_paths_exist()` (referenced below as the
+enforcement mechanism) is confirmed insufficient for `!secretfile`.** It checks only existence,
+not type — Docker's auto-vivification of a missing bind source as a directory defeats it
+structurally. Deferring `!secretfile`'s fail-closed property to this native check was a Phase 2
+design decision, and it was wrong.
+
+**Net effect: `!secretfile` on an autostarting container is currently UNSAFE** — it cannot
+guarantee repopulation-before-autostart, and a missing/wrong-type source is not reliably held
+back. This must be stated plainly in `README.md`'s SECURITY section. `!secret` (env-file,
+resolved at container-create time in the GUI, not at boot) is unaffected.
+
+## Array-start hook (Phase 2a recon, 2026-08-25, read-only against the live host) — SUPERSEDED, see correction above
 
 The Phase 1 plan assumed `!secretfile` repopulation could live in the `.plg`'s `rc.local` boot
 block. **That assumption was wrong** — the store lives at
