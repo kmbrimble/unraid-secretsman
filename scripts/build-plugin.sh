@@ -40,6 +40,12 @@ cp "$REPO_ROOT"/src/*.php "$PKG_DIR/src/"
 cp "$REPO_ROOT"/plugin/scripts/*.php "$PKG_DIR/scripts/"
 cp -r "$REPO_ROOT"/reference/. "$PKG_DIR/reference/"
 
+# .page files must sit in the plugin's installed ROOT — Unraid's page loader
+# (build_pages('plugins/*/*.page')) globs non-recursively, so anything under
+# a subdirectory is silently never registered. Confirmed on a real host: a
+# competing plugin's page under its own pages/ subdir is not reachable.
+cp "$REPO_ROOT"/plugin/*.page "$PKG_DIR/"
+
 mkdir -p "$OUT_DIR"
 TXZ_PATH="$OUT_DIR/$NAME-$VERSION.txz"
 ( cd "$BUILD_DIR" && tar -cJf "$TXZ_PATH" usr )

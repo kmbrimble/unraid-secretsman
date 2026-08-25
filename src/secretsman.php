@@ -189,6 +189,178 @@ function secretsman_safe_name(string $containerName): string
     return $safe !== '' ? $safe : 'container';
 }
 
+/** Default store path: SECRETSMAN_STORE_PATH env var, else the standard location. */
+function secretsman_default_store_path(): string
+{
+    return getenv('SECRETSMAN_STORE_PATH') ?: '/mnt/user/appdata/.secrets/store.json';
+}
+
+/**
+ * Validate a namespace/key pair against the exact same grammar
+ * secretsman_parse_token() enforces — by round-tripping through it, rather
+ * than restating the [A-Za-z0-9_.-]+ character class a second time. The
+ * echo-back equality check (not just "did it parse") is what catches
+ * leading/trailing whitespace: secretsman_parse_token() trims its input,
+ * so " ns" would otherwise parse to "ns" and slip through undetected.
+ */
+function secretsman_check_name(string $ns, string $key): void
+{
+    try {
+        $combined = secretsman_parse_token("!secret {$ns}/{$key}");
+        if ($combined['kind'] === 'token' && $combined['ns'] === $ns && $combined['key'] === $key) {
+            return; // valid
+        }
+    } catch (SecretsmanError $e) {
+        // fall through to work out which field is at fault, below
+    }
+
+    // Probe the namespace alone (against a known-good placeholder key) to
+    // report the specific offending field rather than a generic failure.
+    $nsOk = false;
+    try {
+        $p = secretsman_parse_token("!secret {$ns}/placeholder");
+        $nsOk = $p['kind'] === 'token' && $p['ns'] === $ns;
+    } catch (SecretsmanError $e) {
+        $nsOk = false;
+    }
+
+    $field = $nsOk ? 'key' : 'namespace';
+    $bad   = $nsOk ? $key : $ns;
+    throw new SecretsmanError(
+        "secretsman: invalid {$field} '{$bad}' — namespaces and keys may contain only " .
+        "letters, digits, and _ . - with no other characters"
+    );
+}
+
+/**
+ * Atomic store write: encode -> tmp file at 0600 -> validate via the real
+ * secretsman_load_store() -> rename. This is the load-bearing step: every
+ * shape/newline/permission rule the resolver enforces at container-create
+ * time is enforced here too, against the exact bytes about to become the
+ * store, by calling the same function rather than restating its rules.
+ * On any failure the tmp file is removed and the real store is untouched.
+ */
+function secretsman_save_store(string $path, array $store): void
+{
+    $dir = dirname($path);
+    if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
+        throw new SecretsmanError("secretsman: could not create directory {$dir}");
+    }
+
+    $tmp = $path . '.tmp' . getmypid();
+    $oldUmask = umask(0077); // tmp file must never be even momentarily world-readable
+    try {
+        $json = json_encode($store, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+        if (@file_put_contents($tmp, $json . "\n") === false) {
+            throw new SecretsmanError("secretsman: could not write {$tmp}");
+        }
+        chmod($tmp, 0600);
+    } finally {
+        umask($oldUmask);
+    }
+
+    try {
+        secretsman_load_store($tmp); // throws on anything the resolver itself would reject
+    } catch (SecretsmanError $e) {
+        @unlink($tmp);
+        throw $e;
+    }
+
+    if (!@rename($tmp, $path)) {
+        @unlink($tmp);
+        throw new SecretsmanError("secretsman: could not finalize {$path}");
+    }
+}
+
+/**
+ * Add ($overwrite=false) or edit ($overwrite=true) one secret. Value
+ * validation (string-only, no newline) is deliberately not duplicated here
+ * — it happens inside secretsman_save_store()'s validate-via-load_store
+ * step, so a bad value produces the resolver's own --env-file-framed
+ * message. Read-modify-write is last-write-wins; an flock() on $path would
+ * be the upgrade if this ever has concurrent editors.
+ */
+function secretsman_store_set(string $path, string $ns, string $key, string $value, bool $overwrite = false): void
+{
+    secretsman_check_name($ns, $key);
+
+    $store = is_file($path) ? secretsman_load_store($path) : [];
+
+    if (!$overwrite && isset($store[$ns][$key])) {
+        throw new SecretsmanError("secretsman: '{$ns}/{$key}' already exists — edit it instead of adding it");
+    }
+
+    $store[$ns][$key] = $value;
+    ksort($store[$ns]);
+    ksort($store);
+
+    secretsman_save_store($path, $store);
+}
+
+/** Delete one secret; prunes the namespace too if it's now empty. */
+function secretsman_store_delete(string $path, string $ns, string $key): void
+{
+    $store = secretsman_load_store($path);
+    secretsman_lookup($store, $ns, $key); // throws the resolver's own "no such ..." on a miss
+
+    unset($store[$ns][$key]);
+    if ($store[$ns] === []) {
+        unset($store[$ns]);
+    }
+
+    secretsman_save_store($path, $store);
+}
+
+/**
+ * Scan saved templates for !secret usage, reusing secretsman_parse_token()
+ * as the single source of truth for token detection — no parallel grammar.
+ * Returns ['usage' => ['ns/key' => [containerName, ...]], 'problems' =>
+ * [['container'=>,'field'=>,'message'=>], ...]]. Unparseable templates are
+ * skipped silently (a broken template is Docker's problem, not ours).
+ */
+function secretsman_scan_templates(string $dir): array
+{
+    $usage = [];
+    $problems = [];
+
+    foreach (glob($dir . '/*.xml') ?: [] as $templatePath) {
+        $prev = libxml_use_internal_errors(true);
+        $xml = @simplexml_load_file($templatePath);
+        libxml_use_internal_errors($prev);
+        if ($xml === false || !isset($xml->Config)) {
+            continue;
+        }
+
+        $name = (string)($xml->Name ?? basename($templatePath));
+
+        foreach ($xml->Config as $config) {
+            $type = strtolower((string)($config['Type'] ?? ''));
+            if ($type !== 'variable') {
+                continue;
+            }
+            $value = (string)$config;
+            $rawValue = strlen($value) ? $value : (string)($config['Default'] ?? '');
+
+            try {
+                $parsed = secretsman_parse_token($rawValue);
+            } catch (SecretsmanError $e) {
+                $problems[] = [
+                    'container' => $name,
+                    'field'     => (string)($config['Target'] ?? ($config['Name'] ?? '?')),
+                    'message'   => $e->getMessage(),
+                ];
+                continue;
+            }
+
+            if ($parsed['kind'] === 'token') {
+                $usage["{$parsed['ns']}/{$parsed['key']}"][] = $name;
+            }
+        }
+    }
+
+    return ['usage' => $usage, 'problems' => $problems];
+}
+
 /**
  * Resolve every !secret token in $xml['Config'], mutating $xml in place.
  * (A !secretfile token is recognised only to abort with a message pointing
@@ -211,7 +383,7 @@ function secretsman_safe_name(string $containerName): string
  */
 function secretsman_resolve(array &$xml, string $containerName, array $opts = []): void
 {
-    $storePath   = $opts['store_path']   ?? (getenv('SECRETSMAN_STORE_PATH') ?: '/mnt/user/appdata/.secrets/store.json');
+    $storePath   = $opts['store_path']   ?? secretsman_default_store_path();
     $runtimeRoot = $opts['runtime_root'] ?? (getenv('SECRETSMAN_RUNTIME_ROOT') ?: '/run/secretsman');
     $safeName    = secretsman_safe_name($containerName);
 

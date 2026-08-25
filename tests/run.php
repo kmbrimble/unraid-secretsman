@@ -493,6 +493,157 @@ t('resolve: an explicit opts[store_path] wins over the env var', function () {
 });
 
 // ---------------------------------------------------------------------------
+// Store writer (Phase 3 GUI) — secretsman_check_name / _save_store / _store_set
+// / _store_delete / _scan_templates
+// ---------------------------------------------------------------------------
+
+t('names: check_name accepts a plain ns/key', function () {
+    secretsman_check_name('terriblebutler', 'anthropic_api_key');
+    assert_true(true); // reaching here without throwing is the assertion
+});
+
+t('names: check_name rejects a space in the namespace', function () {
+    assert_throws(fn() => secretsman_check_name('my ns', 'key'), SecretsmanError::class, 'namespace');
+});
+
+t('names: check_name rejects a slash in the key', function () {
+    assert_throws(fn() => secretsman_check_name('ns', 'a/b'), SecretsmanError::class, 'key');
+});
+
+t('names: check_name rejects an empty namespace', function () {
+    assert_throws(fn() => secretsman_check_name('', 'key'));
+});
+
+t('names: check_name rejects leading whitespace that parse_token would otherwise trim away', function () {
+    assert_throws(fn() => secretsman_check_name(' ns', 'key'));
+});
+
+t('save: save_store writes 0600 and round-trips through load_store', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/store.json';
+    $data = ['ns' => ['k' => 'test-value-not-a-real-secret']];
+    secretsman_save_store($path, $data);
+    assert_eq('0600', substr(sprintf('%o', fileperms($path)), -4));
+    assert_eq($data, secretsman_load_store($path));
+});
+
+t('save: save_store creates the parent directory when the store does not exist yet', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/nested/store.json';
+    secretsman_save_store($path, ['ns' => ['k' => 'v']]);
+    assert_true(is_file($path));
+});
+
+t('save: save_store refuses a value with a newline and leaves the existing store untouched', function () {
+    $dir = scratch_dir();
+    $path = write_store($dir, ['ns' => ['k' => 'original-value']]);
+    $before = file_get_contents($path);
+    assert_throws(
+        fn() => secretsman_save_store($path, ['ns' => ['k' => "line1\nline2"]]),
+        SecretsmanError::class,
+        '--env-file'
+    );
+    assert_eq($before, file_get_contents($path), 'store must be byte-identical after a rejected save');
+});
+
+t('save: save_store leaves no .tmp file behind on failure', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/store.json';
+    assert_throws(fn() => secretsman_save_store($path, ['ns' => ['k' => "bad\nvalue"]]));
+    assert_eq([], glob($dir . '/*.tmp*'), 'no tmp file should survive a failed save');
+});
+
+t('set: store_set adds a new key to a fresh store', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/store.json';
+    secretsman_store_set($path, 'ns', 'k', 'test-value-not-a-real-secret');
+    assert_eq('test-value-not-a-real-secret', secretsman_lookup(secretsman_load_store($path), 'ns', 'k'));
+});
+
+t('set: store_set refuses to overwrite an existing key unless overwrite is true', function () {
+    $dir = scratch_dir();
+    $path = write_store($dir, ['ns' => ['k' => 'original']]);
+    assert_throws(fn() => secretsman_store_set($path, 'ns', 'k', 'new-value'), SecretsmanError::class, 'already exists');
+    secretsman_store_set($path, 'ns', 'k', 'new-value', true);
+    assert_eq('new-value', secretsman_lookup(secretsman_load_store($path), 'ns', 'k'));
+});
+
+t('set: store_set validates ns/key via check_name before touching the store', function () {
+    $dir = scratch_dir();
+    $path = write_store($dir, ['ns' => ['k' => 'v']]);
+    assert_throws(fn() => secretsman_store_set($path, 'bad ns', 'k', 'v'));
+    assert_eq(['ns' => ['k' => 'v']], secretsman_load_store($path), 'invalid ns/key must not reach the store');
+});
+
+t('delete: store_delete removes the key and prunes an emptied namespace', function () {
+    $dir = scratch_dir();
+    $path = write_store($dir, ['ns' => ['k' => 'v']]);
+    secretsman_store_delete($path, 'ns', 'k');
+    assert_eq([], secretsman_load_store($path));
+});
+
+t('delete: store_delete leaves sibling keys in the namespace untouched', function () {
+    $dir = scratch_dir();
+    $path = write_store($dir, ['ns' => ['k1' => 'v1', 'k2' => 'v2']]);
+    secretsman_store_delete($path, 'ns', 'k1');
+    assert_eq(['ns' => ['k2' => 'v2']], secretsman_load_store($path));
+});
+
+t('delete: store_delete throws for a missing key, matching lookup()', function () {
+    $dir = scratch_dir();
+    $path = write_store($dir, ['ns' => ['k' => 'v']]);
+    assert_throws(fn() => secretsman_store_delete($path, 'ns', 'missing'), SecretsmanError::class, 'no such key');
+});
+
+function fixture_scan_template(string $dir, string $name, array $configEntries): void
+{
+    $xml = "<?xml version=\"1.0\"?>\n<Container version=\"2\">\n  <Name>{$name}</Name>\n";
+    foreach ($configEntries as $c) {
+        $xml .= sprintf(
+            "  <Config Name=\"%s\" Target=\"%s\" Default=\"%s\" Mode=\"\" Type=\"%s\">%s</Config>\n",
+            htmlspecialchars($c['name'] ?? 'x'),
+            htmlspecialchars($c['target'] ?? 'X'),
+            htmlspecialchars($c['default'] ?? ''),
+            htmlspecialchars($c['type'] ?? 'Variable'),
+            htmlspecialchars($c['value'] ?? '')
+        );
+    }
+    $xml .= "</Container>\n";
+    file_put_contents($dir . '/my-' . $name . '.xml', $xml);
+}
+
+t('scan: scan_templates maps a token to the container names that reference it', function () {
+    $dir = scratch_dir();
+    fixture_scan_template($dir, 'ctrA', [['target' => 'V', 'type' => 'Variable', 'value' => '!secret ns/k']]);
+    fixture_scan_template($dir, 'ctrB', [['target' => 'V', 'type' => 'Variable', 'value' => '!secret ns/k']]);
+    $scan = secretsman_scan_templates($dir);
+    assert_eq(['ctrA', 'ctrB'], $scan['usage']['ns/k']);
+    assert_eq([], $scan['problems']);
+});
+
+t('scan: scan_templates reports a malformed token as a problem, not a usage', function () {
+    $dir = scratch_dir();
+    fixture_scan_template($dir, 'ctrBad', [['target' => 'V', 'type' => 'Variable', 'value' => '!Secret ns/k']]);
+    $scan = secretsman_scan_templates($dir);
+    assert_eq([], $scan['usage']);
+    assert_eq(1, count($scan['problems']));
+    assert_eq('ctrBad', $scan['problems'][0]['container']);
+});
+
+t('scan: scan_templates ignores tokens in non-Variable fields', function () {
+    $dir = scratch_dir();
+    fixture_scan_template($dir, 'ctrPath', [['target' => '/x', 'type' => 'Path', 'default' => '!secret ns/k']]);
+    $scan = secretsman_scan_templates($dir);
+    assert_eq([], $scan['usage']);
+    assert_eq([], $scan['problems']);
+});
+
+t('scan: scan_templates returns empty for a directory with no templates', function () {
+    $dir = scratch_dir();
+    assert_eq(['usage' => [], 'problems' => []], secretsman_scan_templates($dir));
+});
+
+// ---------------------------------------------------------------------------
 // Never log a resolved secret
 // ---------------------------------------------------------------------------
 

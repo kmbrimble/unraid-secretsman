@@ -257,8 +257,47 @@ same way a real boot would. See `docs/phase2-resume.md` for the full incident.
   installed. Do not assume that path works just because the install path does; it needs the same
   real-mechanism verification (clean slate, actual `plugin remove`, confirm stock hash returns)
   before it can be trusted, whenever there's an actual reason to remove it.
-- **Phase 3 (not yet scoped) — GUI page** for managing the store (add/edit/remove secrets)
-  without hand-editing `store.json` over SSH.
+- **Phase 3 — Settings GUI (this repo, current state).** Prompted by a real incident: a
+  hand-edited `store.json` with a missing comma and a trailing comma produced a completely
+  blank Docker "Update Container" page with no visible error. Two shipped files:
+  `plugin/SecretsMan.page` (registered at Settings → User Utilities, `launch="Settings/SecretsMan"`
+  — Unraid's `.page` loader globs `plugins/*/*.page` non-recursively, so the file must sit in
+  the plugin's installed root, not a subdirectory) is a static shell with no store access at
+  all; `plugin/scripts/store_api.php` is the only PHP that ever touches the store from the GUI,
+  and the only HTML renderer for it — the page ships an empty table and calls `action=list` on
+  load, so there is exactly one render path for the initial paint and every post-mutation
+  repaint. `src/secretsman.php` gained six functions for this
+  (`secretsman_default_store_path`, `secretsman_check_name`, `secretsman_save_store`,
+  `secretsman_store_set`, `secretsman_store_delete`, `secretsman_scan_templates`), all
+  reusing existing validators as the single source of truth rather than restating them:
+  `secretsman_check_name()` validates a namespace/key pair by round-tripping through
+  `secretsman_parse_token()` itself (not a second copy of the `[A-Za-z0-9_.-]+` grammar), and
+  `secretsman_save_store()` (the project's first store *writer*) validates a candidate store by
+  calling `secretsman_load_store()` on it — the exact function the resolver uses at
+  container-create time — before the atomic `rename()`, so every shape/newline/permission rule
+  is enforced identically for the GUI and the resolver with nothing duplicated.
+  **Standing rule this phase established: a masked value is never sent to the client at all**
+  — not a fragment, not a `data-value` attribute, nothing a "View Source" would catch. The
+  `list`/mutation JSON carries only a length; the *only* response that ever carries a plaintext
+  value is `reveal`, for one explicitly named `ns/key` per request. Keep this true for any
+  future page touching the store — it's the easiest rule-3 violation to introduce by accident
+  (e.g. "just put the value in a hidden attribute for JS to use later").
+  **The GUI diagnoses a corrupt store; it never offers to repair or overwrite one** — a
+  "reset store" button would be a one-click way to lose every secret over a missing comma, and
+  the actual gap this phase closes is that nothing *told* the user about the comma, not that
+  fixing it needed to be one click.
+  Does not touch `src/patch.php`, the `Helpers.php` insertion point, or
+  `secretsman_resolve()`'s behavior (one pure line-extraction refactor aside). The
+  `RECOVERY.md` drill was not re-run for this phase — rule 7 scopes it to the patch layer,
+  which this phase never touches — but the clean-slate install re-verification standing rule
+  above **was** re-applied, since `scripts/build-plugin.sh` and the `.plg` both changed.
+  **Known issue, out of scope for this phase:** `plugin/scripts/common.php`'s
+  `secretsman_notify()` falls back to `fwrite(STDERR, ...)` when the notify binary isn't
+  executable — `STDERR` is a CLI-SAPI-only constant and is undefined under php-fpm, so calling
+  `secretsman_notify()` from a web-facing script would fatal. `store_api.php` sidesteps this by
+  never including `common.php` (it has no reason to raise an Unraid notification — GUI errors
+  go to the user who caused them, in the page). Fix with a one-line `error_log()` swap
+  whenever something web-facing actually needs to notify.
 
 ## Testing
 
