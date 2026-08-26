@@ -17,7 +17,10 @@ next.
 4. **`/usr/local/emhttp` is restored from the OS image every boot**, so the `.plg` re-patches at
    boot. The patch must be a surgical, checksum-guarded text injection that REFUSES to apply
    (and raises an Unraid notification) when `Helpers.php` doesn't match a known-good hash in
-   `reference/<version>/HASHES`. Never a whole-file replacement.
+   `reference/<version>/HASHES`. Never a whole-file replacement. **When this gate refuses to
+   patch after an Unraid upgrade, use the `unraid-upgrade-reverify` skill
+   (`.claude/skills/unraid-upgrade-reverify/SKILL.md`)** — the repeatable re-verification
+   procedure this project developed, rather than re-deriving it from scratch each time.
 5. **Prefer leaving the system untouched over a partial patch.**
 6. **Never in the command string.** Callers of `xmlToCommand()` echo the returned `$cmd`,
    including to the GUI. A resolved secret must never appear in that string — see "Insertion
