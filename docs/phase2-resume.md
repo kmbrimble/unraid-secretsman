@@ -1,5 +1,12 @@
 # Phase 2 resume brief — HISTORICAL: !secretfile was removed, this whole incident is now moot
 
+> **The container-loss investigation recorded in this file has moved.** It was never really
+> about secretsman — a host-level dockerd/containerd fault, only noticed during this project's
+> reboot testing. It now lives at `kmbrimble/unraid-ops`
+> (`investigations/container-loss.md`), a private repo for host-level maintenance work, updated
+> with a third reboot's evidence since this file was last touched. This file is kept for its
+> detailed incident-by-incident narrative but is no longer the canonical record.
+
 ## FINAL DECISION (2026-08-25) — !secretfile removed, not redesigned; read this, not the plan below
 
 Everything in this file below this section documents a real incident (the repopulation-ordering

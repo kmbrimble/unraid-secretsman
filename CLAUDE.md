@@ -4,6 +4,11 @@ Central secret storage for Unraid Docker templates. See `README.md` for what thi
 this file is the design record and phase roadmap for whoever (human or Claude) picks this up
 next.
 
+**Host-level work that isn't about this plugin now lives in `kmbrimble/unraid-ops`** (private
+repo) — most notably the dockerd/containerd container-loss investigation formerly tracked in
+`docs/phase2-resume.md`, which was never actually caused by secretsman. See that repo's
+`investigations/` directory, not this one, for anything host-level going forward.
+
 ## Non-negotiable design rules
 
 1. **FAIL CLOSED.** An unresolvable token aborts container creation with a visible error. A
