@@ -30,6 +30,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
     respond(['ok' => false, 'error' => 'secretsman: POST required']);
 }
 
+// PHP silently empties $_POST (no warning reaching this script) when a POST
+// body exceeds post_max_size — without this check that looks like "unknown
+// action" instead of naming the actual problem.
+if (empty($_POST) && (int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) {
+    http_response_code(413);
+    respond(['ok' => false, 'error' => 'secretsman: upload too large — this server accepts POST bodies up to ' . ini_get('post_max_size') . ' (post_max_size); try a smaller archive']);
+}
+
 /** Escape for HTML text content — every interpolated value goes through this. */
 function h(string $s): string
 {
@@ -55,8 +63,10 @@ function render_backup_html(array $config, bool $passwordSet, array $archives): 
 
     $html = '<table class="new"><tr>';
     $html .= '<td>Destination</td><td>'
-        . '<input type="text" id="bk-dest" value="' . h((string)($config['destination'] ?? '')) . '" placeholder="/mnt/user/backups/secretsman"> '
+        . '<span style="display:flex;align-items:center;gap:0.5em">'
+        . '<input type="text" id="bk-dest" style="flex:1 1 auto;width:auto" value="' . h((string)($config['destination'] ?? '')) . '" placeholder="/mnt/user/backups/secretsman">'
         . '<button id="bk-dest-browse" type="button">Browse&hellip;</button>'
+        . '</span>'
         . '<div id="bk-dest-tree" style="display:none;max-height:16em;overflow:auto;border:1px solid var(--input-border-color, #888);padding:.5em;margin-top:.5em"></div>'
         . '</td>';
     $html .= '</tr><tr>';
@@ -121,7 +131,11 @@ function config_payload(): array
     $config = secretsman_backup_config_load();
     $passwordSet = secretsman_backup_password_load() !== null;
     $archives = secretsman_backup_list_archives((string)($config['destination'] ?? ''));
-    return ['ok' => true, 'html' => render_backup_html($config, $passwordSet, $archives)];
+    return [
+        'ok' => true,
+        'html' => render_backup_html($config, $passwordSet, $archives),
+        'uploadLimitBytes' => secretsman_backup_upload_limit_bytes(),
+    ];
 }
 
 /**
@@ -196,21 +210,41 @@ try {
             $config = secretsman_backup_config_load();
             $destination = (string)($config['destination'] ?? '');
 
-            if (!empty($_FILES['archive']['tmp_name']) && is_uploaded_file($_FILES['archive']['tmp_name'])) {
-                $archivePath = $_FILES['archive']['tmp_name'];
-            } elseif (!empty($_POST['selected'])) {
-                // Pin strictly to the configured destination directory and a
-                // plain basename — never trust a client-supplied path.
-                $selected = basename((string)$_POST['selected']);
-                $archivePath = $destination . '/' . $selected;
-                if ($destination === '' || !is_file($archivePath) || dirname(realpath($archivePath) ?: '') !== realpath($destination)) {
-                    throw new SecretsmanError('secretsman: no such archive');
+            // Uploads travel as a base64 POST field, not multipart/form-data
+            // — this host's nginx auth_request subrequest times out on
+            // multipart POST regardless of target script or session state
+            // (confirmed live, see CLAUDE.md), so plain urlencoded POST via
+            // the same $.post path every other action already uses is the
+            // only proven-working transport here.
+            $uploadedTmpPath = null;
+            try {
+                if (!empty($_POST['archive_b64'])) {
+                    $raw = base64_decode((string) $_POST['archive_b64'], true);
+                    if ($raw === false) {
+                        throw new SecretsmanError('secretsman: uploaded archive is not valid base64');
+                    }
+                    $uploadedTmpPath = tempnam(sys_get_temp_dir(), 'sm-restore-');
+                    file_put_contents($uploadedTmpPath, $raw);
+                    chmod($uploadedTmpPath, 0600);
+                    $archivePath = $uploadedTmpPath;
+                } elseif (!empty($_POST['selected'])) {
+                    // Pin strictly to the configured destination directory and a
+                    // plain basename — never trust a client-supplied path.
+                    $selected = basename((string)$_POST['selected']);
+                    $archivePath = $destination . '/' . $selected;
+                    if ($destination === '' || !is_file($archivePath) || dirname(realpath($archivePath) ?: '') !== realpath($destination)) {
+                        throw new SecretsmanError('secretsman: no such archive');
+                    }
+                } else {
+                    throw new SecretsmanError('secretsman: choose an archive to restore, or upload one');
                 }
-            } else {
-                throw new SecretsmanError('secretsman: choose an archive to restore, or upload one');
-            }
 
-            $result = secretsman_backup_restore($archivePath, $password, secretsman_default_store_path(), $mode);
+                $result = secretsman_backup_restore($archivePath, $password, secretsman_default_store_path(), $mode);
+            } finally {
+                if ($uploadedTmpPath !== null) {
+                    @unlink($uploadedTmpPath);
+                }
+            }
             $payload = config_payload();
             $payload['restored'] = $result; // names only (added/collisions), never values
             respond($payload);

@@ -553,3 +553,44 @@ function secretsman_backup_cron_line(array $schedule, string $scriptPath): ?stri
     }
     return "{$fields} php {$scriptPath} > /dev/null 2>&1";
 }
+
+/**
+ * Parses a php.ini shorthand size ("8M", "256M", "512K", "100", "-1") into a
+ * byte count. -1 (unlimited) is returned as-is.
+ */
+function secretsman_parse_ini_bytes(string $value): int
+{
+    $value = trim($value);
+    if ($value === '' || $value === '-1') {
+        return -1;
+    }
+    $num = (int) $value;
+    return match (strtolower(substr($value, -1))) {
+        'g' => $num * 1024 * 1024 * 1024,
+        'm' => $num * 1024 * 1024,
+        'k' => $num * 1024,
+        default => $num,
+    };
+}
+
+/**
+ * The largest raw (pre-base64) archive the restore-upload endpoint can
+ * accept. Bounded by post_max_size (the whole POST body, and base64
+ * inflates the payload ~4/3) and memory_limit (php holds the decoded body
+ * in memory too); a fixed reserve covers the other POST fields (password,
+ * mode, csrf token, archive name) so the number reported to the client is
+ * real, not approximate. This is why restore uses base64-over-POST instead
+ * of multipart upload in the first place — see CLAUDE.md's nginx
+ * auth_request note.
+ */
+function secretsman_backup_upload_limit_bytes(): int
+{
+    $postMax = secretsman_parse_ini_bytes((string) ini_get('post_max_size'));
+    $memLimit = secretsman_parse_ini_bytes((string) ini_get('memory_limit'));
+    $capBytes = $memLimit > 0 ? min($postMax, $memLimit) : $postMax;
+    if ($capBytes <= 0) {
+        return PHP_INT_MAX;
+    }
+    $usable = max(0, $capBytes - 65536);
+    return (int) floor($usable / 1.34);
+}

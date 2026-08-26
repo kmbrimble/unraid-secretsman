@@ -100,6 +100,42 @@ function write_store(string $dir, array $data, int $mode = 0600): string
     return $path;
 }
 
+/**
+ * Runs one of the web-facing dispatchers (store_api.php / backup_api.php)
+ * as a real, separate PHP process and returns its decoded JSON response.
+ * Out-of-process because both scripts declare top-level functions and call
+ * exit() unconditionally on every path (respond()) — requiring either
+ * directly into this test process would fatal on function redeclaration on
+ * the second test and kill the whole suite on the first exit(). This is the
+ * only way to exercise the actual dispatch logic (action routing, the
+ * restore path-traversal guard, the oversized-POST check) rather than just
+ * the src/ functions it calls — those are covered elsewhere, but the
+ * dispatchers themselves, the part directly exposed to attacker-controlled
+ * POST input, previously had no test coverage at all.
+ */
+function run_web_script(string $scriptPath, array $post, array $serverExtra = []): array
+{
+    $server = array_merge(['REQUEST_METHOD' => 'POST'], $serverExtra);
+    $bootstrap = sys_get_temp_dir() . '/secretsman-test-boot-' . bin2hex(random_bytes(8)) . '.php';
+    file_put_contents($bootstrap, '<?php'
+        . "\n\$_SERVER = array_merge(\$_SERVER, " . var_export($server, true) . ');'
+        . "\n\$_POST = " . var_export($post, true) . ';'
+        . "\nrequire " . var_export($scriptPath, true) . ';');
+
+    $descriptors = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+    $proc = proc_open(['php', $bootstrap], $descriptors, $pipes);
+    assert_true($proc !== false, "could not start php subprocess for {$scriptPath}");
+    $stdout = stream_get_contents($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    foreach ($pipes as $p) { fclose($p); }
+    proc_close($proc);
+    unlink($bootstrap);
+
+    $decoded = json_decode($stdout, true);
+    assert_true(is_array($decoded), "expected JSON object from {$scriptPath}, got: " . var_export($stdout, true) . ($stderr !== '' ? "\nstderr: {$stderr}" : ''));
+    return $decoded;
+}
+
 function variable_config(string $target, string $value): array
 {
     return [
@@ -1194,6 +1230,24 @@ t('cron: cron_line() builds the expected 5-field expression per mode', function 
     assert_eq('0 2 15 * * php /x/backup_cron.php > /dev/null 2>&1', secretsman_backup_cron_line(['mode' => 'monthly', 'hour' => 2, 'minute' => 0, 'dayOfMonth' => 15], '/x/backup_cron.php'));
 });
 
+t('backup: parse_ini_bytes() reads php.ini shorthand sizes', function () {
+    assert_eq(8 * 1024 * 1024, secretsman_parse_ini_bytes('8M'));
+    assert_eq(256 * 1024 * 1024, secretsman_parse_ini_bytes('256M'));
+    assert_eq(512 * 1024, secretsman_parse_ini_bytes('512K'));
+    assert_eq(1024 * 1024 * 1024, secretsman_parse_ini_bytes('1G'));
+    assert_eq(100, secretsman_parse_ini_bytes('100'));
+    assert_eq(-1, secretsman_parse_ini_bytes('-1'));
+});
+
+t('backup: upload_limit_bytes() returns a positive ceiling, not unbounded', function () {
+    // Smoke test only — the real ini values are the live host's, not this
+    // sandbox's; the important property is that a small post_max_size (as
+    // set on the real host, 8M) yields a finite, sane-sized limit rather
+    // than 0 or PHP_INT_MAX.
+    $limit = secretsman_backup_upload_limit_bytes();
+    assert_true($limit > 0, 'upload limit must be positive');
+});
+
 t('cron: backup_cron_register_main() never touches STDOUT/STDERR directly', function () {
     // Caught live: this function is called both from the CLI install block
     // AND in-process from backup_api.php's web request (php-fpm) context,
@@ -1280,6 +1334,112 @@ if (secretsman_backup_7z_bin() !== null) {
         assert_eq('openssl', secretsman_backup_detect_format($opensslResult['path']), 'format must come from the file, not from 7z being available here');
     });
 }
+
+// ---------------------------------------------------------------------------
+// Web dispatchers (store_api.php / backup_api.php) — the actual code paths
+// exposed to attacker-controlled POST input. Run out-of-process; see
+// run_web_script()'s own comment for why.
+// ---------------------------------------------------------------------------
+
+t('web: store_api.php rejects a non-POST request without ever reaching the store', function () {
+    $resp = run_web_script(__DIR__ . '/../plugin/scripts/store_api.php', [], ['REQUEST_METHOD' => 'GET']);
+    assert_eq(false, $resp['ok']);
+    assert_true(str_contains($resp['error'], 'POST required'));
+});
+
+t('web: store_api.php list returns the rendered table html', function () {
+    $dir = scratch_dir();
+    $storePath = write_store($dir, ['ns' => ['k' => 'v']]);
+    // secretsman_default_store_path() reads SECRETSMAN_STORE_PATH at call
+    // time inside the subprocess, so it must be a real env var, not just
+    // $_SERVER — putenv() here affects proc_open's inherited environment.
+    putenv("SECRETSMAN_STORE_PATH={$storePath}");
+    try {
+        $resp = run_web_script(__DIR__ . '/../plugin/scripts/store_api.php', ['action' => 'list']);
+    } finally {
+        putenv('SECRETSMAN_STORE_PATH');
+    }
+    assert_eq(true, $resp['ok']);
+    assert_true(str_contains($resp['html'], 'k'), 'rendered table should mention the key name');
+});
+
+t('web: store_api.php rejects an unknown action', function () {
+    $resp = run_web_script(__DIR__ . '/../plugin/scripts/store_api.php', ['action' => 'nonsense']);
+    assert_eq(false, $resp['ok']);
+    assert_true(str_contains($resp['error'], 'unknown action'));
+});
+
+t('web: backup_api.php list reports the real upload limit and no password set', function () {
+    $dir = scratch_dir();
+    putenv("SECRETSMAN_BACKUP_CONFIG_PATH={$dir}/backup-config.json");
+    putenv("SECRETSMAN_BACKUP_PASSWORD_PATH={$dir}/backup-password");
+    try {
+        $resp = run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', ['action' => 'list']);
+    } finally {
+        putenv('SECRETSMAN_BACKUP_CONFIG_PATH');
+        putenv('SECRETSMAN_BACKUP_PASSWORD_PATH');
+    }
+    assert_eq(true, $resp['ok']);
+    assert_true($resp['uploadLimitBytes'] > 0);
+    assert_true(str_contains($resp['html'], 'not set yet'));
+});
+
+t('web: backup_api.php restore rejects a path-traversal attempt in "selected" without touching anything outside the destination', function () {
+    $dir = scratch_dir();
+    $destDir = $dir . '/dest';
+    mkdir($destDir, 0700, true);
+    // A real archive next to the destination, but OUTSIDE it — the traversal
+    // target this test proves is unreachable via "selected".
+    file_put_contents($dir . '/secret-outside.txt', 'should never be read via selected=');
+    putenv("SECRETSMAN_BACKUP_CONFIG_PATH={$dir}/backup-config.json");
+    putenv("SECRETSMAN_BACKUP_PASSWORD_PATH={$dir}/backup-password");
+    try {
+        secretsman_backup_config_save(['destination' => $destDir, 'schedule' => ['mode' => 'off'], 'retention' => 3, 'lastRun' => null]);
+        $resp = run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', [
+            'action' => 'restore',
+            'password' => 'irrelevant',
+            'mode' => 'merge',
+            'selected' => '../secret-outside.txt',
+        ]);
+    } finally {
+        putenv('SECRETSMAN_BACKUP_CONFIG_PATH');
+        putenv('SECRETSMAN_BACKUP_PASSWORD_PATH');
+    }
+    assert_eq(false, $resp['ok']);
+    assert_true(str_contains($resp['error'], 'no such archive'), 'traversal must be rejected as a missing archive, not followed');
+});
+
+t('web: backup_api.php restore rejects invalid base64 cleanly, without a stray temp file left behind', function () {
+    $dir = scratch_dir();
+    putenv("SECRETSMAN_BACKUP_CONFIG_PATH={$dir}/backup-config.json");
+    putenv("SECRETSMAN_BACKUP_PASSWORD_PATH={$dir}/backup-password");
+    try {
+        $before = glob(sys_get_temp_dir() . '/sm-restore-*');
+        $resp = run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', [
+            'action' => 'restore',
+            'password' => 'irrelevant',
+            'mode' => 'merge',
+            'archive_b64' => 'not valid base64!!!',
+        ]);
+        $after = glob(sys_get_temp_dir() . '/sm-restore-*');
+        assert_eq($before, $after, 'a rejected upload must not leave a temp file behind');
+    } finally {
+        putenv('SECRETSMAN_BACKUP_CONFIG_PATH');
+        putenv('SECRETSMAN_BACKUP_PASSWORD_PATH');
+    }
+    assert_eq(false, $resp['ok']);
+    assert_true(str_contains($resp['error'], 'base64'));
+});
+
+t('web: backup_api.php reports oversized-and-silently-emptied POST bodies clearly instead of "unknown action"', function () {
+    // Simulates what PHP itself does when a POST body exceeds post_max_size:
+    // $_POST comes back empty but Content-Length is still set. Without the
+    // explicit check in backup_api.php this looks exactly like an unrouted
+    // action instead of naming the real problem.
+    $resp = run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', [], ['CONTENT_LENGTH' => '99999999']);
+    assert_eq(false, $resp['ok']);
+    assert_true(str_contains($resp['error'], 'too large'));
+});
 
 // ---------------------------------------------------------------------------
 

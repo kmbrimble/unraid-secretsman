@@ -406,6 +406,28 @@ same way a real boot would. See `docs/phase2-resume.md` for the full incident.
   first). Both now catch `\Throwable` too, logging full detail via `error_log()` (safe under
   php-fpm) and returning a readable `Class: message` to the banner.
 
+  **Restore, verified end-to-end in the real browser (2026-08-26), after three rounds of
+  browser-only failures the CLI/backend testing above could never have caught:** the fix was
+  the multipart/`auth_request` bug in the nginx STANDING NOTE above — restore now sends an
+  uploaded archive as a base64 field over plain POST, same transport as every other action.
+  That fix surfaced two more real, purely client-side bugs, both now fixed and both confirmed
+  live: (1) the result banner (merge/replace counts) never appeared because `doRestore()`
+  triggered a second, concurrent table-refresh request that shared `banner()`'s
+  unconditional-clear-on-response behavior — whichever response landed second wiped the other's
+  message; fixed with a `refreshTableOnly()` that never touches the banner, used only from the
+  restore path. (2) Even after that fix, the result popup could still be silently dropped by a
+  SweetAlert v1 quirk: calling `swal()` again before a *previous* `swal()`'s close animation
+  finishes can no-op — restore is the only action that chains a confirmation swal into a result
+  swal, so it's the only one exposed to this; fixed with a 400ms delay between confirm and the
+  restore actually starting. `banner()` (shared by every action, not just backup/restore) was
+  also changed from a static `.notice` div — Unraid's stock styling for that class is a fixed
+  warning-triangle look, identical for success and failure — to `swal()`'s built-in
+  success/error types (green tick / red cross), with a same-page `alert()` fallback if `swal()`
+  itself ever throws, so a result can't go unreported a fourth time. Separately, the Destination
+  field's Browse button was overflowing off the page edge — same stock-CSS
+  `input`/`select { width: 100% }` cause as the earlier password/schedule-row bugs — fixed with
+  an inline-flex wrapper so the text input fills the remaining space instead of the full row.
+
 ## STANDING NOTE — documenting a hazard is not the same as not reproducing it
 
 During Phase 3 planning, this file already recorded that `secretsman_notify()`'s `STDERR`
@@ -474,6 +496,34 @@ Before adding a check "just in case": find the real stock code path first (read 
 as both corrections below eventually did), and confirm the case you're worried about is
 actually possible given what that code does — don't guess at what a safety margin costs.
 
+## STANDING NOTE — this host's nginx auth_request times out on multipart POST; don't build another file upload
+
+`nginx.conf` runs `auth_request /auth-request.php;` globally, ahead of every request to any
+plugin script. Confirmed live (`/var/log/nginx/error.log`): a `multipart/form-data` POST to
+either `backup_api.php` or `store_api.php` — any script, any action, authenticated or not —
+causes that internal subrequest itself to time out (`upstream timed out ... subrequest:
+"/auth-request.php"`, then `auth request unexpected status: 504`), and nginx serves that to the
+client as a failure before the plugin's own PHP ever runs. This is why restore's original
+file-upload design (`multipart/form-data` via `fetch()`, needed only because jQuery's global
+CSRF `$.ajaxPrefilter` can't touch a `FormData` body safely) failed in the browser twice — once
+as total silence, once as a loud 500 paired with an unrelated `"POST required"` body from a
+second, non-POST request racing it — while every CLI-simulated call to the same backend
+function succeeded, because CLI invocation never goes through nginx or this subrequest at all.
+**Plain urlencoded POST via `$.post` is the only proven-working transport on this host.**
+Restore now sends an uploaded archive as a base64 field in a normal POST (`archive_b64`) rather
+than a file, through the same path every other action already uses — see
+`secretsman_backup_upload_limit_bytes()` in `src/backup.php` for the resulting size ceiling
+(bounded by `post_max_size`/`memory_limit`, base64 inflation accounted for). **If a future
+feature wants to upload a file through this webGui, this is why multipart won't work here and
+base64-over-POST (or another transport that isn't multipart) is the starting point, not a
+fallback to reach for after multipart fails again.**
+
+The earlier curl-based reproduction of this exact hang (unconditional, unauthenticated, any
+script) was found *before* the user's live 500 report, on a path about to ship, and was
+initially treated as a possible dead end while a different symptom was chased — it wasn't; both
+were the same bug. An unexplained hang on a path that's about to ship is itself a finding worth
+chasing to ground, not a detail to park while looking for something louder.
+
 ## Testing
 
 `php tests/run.php` — no framework, no fixtures beyond what's inline in the test file (plus
@@ -488,3 +538,18 @@ real template on a live host plus the committed fixture template, and is meant t
 host, read-only. It deliberately never prints full command content (real templates' real paths/
 ports), only filenames and pass/fail — its own output is safe to paste anywhere, matching the
 project's own premise.
+
+A whole-repo review (2026-08-26) found that `tests/run.php` exercised every `src/` function but
+never the web dispatchers themselves (`plugin/scripts/store_api.php`,
+`plugin/scripts/backup_api.php`) — the actual code directly exposed to attacker-controlled POST
+input, including the `restore` action's path-traversal guard on the client-supplied `selected`
+filename. Closed with `run_web_script()`, a helper that runs a dispatcher as a real, separate
+PHP process (both scripts declare top-level functions and call `exit()` unconditionally on
+every response, so requiring either directly into the test process would redeclare functions on
+the second test and kill the whole suite on the first `exit()`); env-var overrides
+(`SECRETSMAN_STORE_PATH` etc.) give each subprocess an isolated scratch store/config, same
+pattern already used for `src/` tests. New `web:`-prefixed tests cover: non-POST rejection,
+`list` for both dispatchers, an unknown action, the oversized-POST-silently-empties-`$_POST`
+case, and — the one that mattered most — a `selected=../secret-outside.txt` traversal attempt
+against `backup_api.php restore`, asserting the file outside the configured destination is
+never reached.
