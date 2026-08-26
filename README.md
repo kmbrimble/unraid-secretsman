@@ -154,11 +154,13 @@ resolved at container-create time in the GUI, never at boot.
 
 ## Status
 
-Functional and verified live: the resolver, the boot-time patch, the Settings GUI, clean
-removal (install → remove → confirm stock `Helpers.php` returns byte-for-byte), and backup
-create/verify/prune all work on the recon host (Unraid 7.3.1). Scheduled-backup durability
-across a real reboot, and a full restore rehearsal, are the last checks before a release — see
-`CLAUDE.md`'s Phase roadmap. **Not yet tagged as a release.**
+**Released as 1.0.0.** Verified live on the recon host (Unraid 7.3.1): the resolver, the
+boot-time patch, the Settings GUI, clean removal (install → remove → confirm stock
+`Helpers.php` returns byte-for-byte), backup create/verify/prune/restore (both replace and
+merge modes, exercised through the real browser, not just the backend), and scheduled-backup
+durability across a real reboot (a scheduled job surviving reboot *and firing*, producing a
+real dated archive — not just a surviving cron line). See `CLAUDE.md`'s Phase roadmap for the
+full verification history.
 
 ## License
 

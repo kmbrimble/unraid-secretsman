@@ -378,6 +378,18 @@ same way a real boot would. See `docs/phase2-resume.md` for the full incident.
   and `/etc/cron.d`, neither needing the array mounted, so the `.plg`'s existing every-boot
   install block is sufficient on its own (see the standing note below on not layering a second
   mechanism where one already-verified one covers it).
+  **Reboot cron durability check: VERIFIED (2026-08-26), against a real reboot, not a
+  simulation.** A short-interval schedule was set before the reboot; syslog confirmed the
+  `.plg`'s install block re-registered the flash `.cron` file at boot
+  (`secretsman: backup cron registered: ...`, timestamped, matching the resulting file
+  byte-for-byte), and — the part a surviving cron line alone doesn't prove — a second
+  short-interval schedule set *after* the reboot actually **fired**, producing a real,
+  correctly-dated archive (`secretsman-backup-20260826-185501.7z`) with retention pruning
+  behaving correctly alongside it. One incidental, non-bug finding: the first post-reboot test
+  time was missed because it fell before `crond` itself had finished starting (`crond` came up
+  at 18:41:53; the test target was 18:40) — normal no-catch-up cron behavior, not a flaw in the
+  regenerate-every-boot mechanism, which the syslog timestamp match already proved correct
+  independent of this. Schedule was reverted to the real weekly config afterward.
   Restore is two modes, not one: **replace** (the archive becomes the store, disaster
   recovery) and **merge** (add-only; a key present in both is left untouched and reported as a
   collision by name, never silently resolved in either direction). Both validate through
