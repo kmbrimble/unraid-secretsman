@@ -9,6 +9,17 @@ repo) — most notably the dockerd/containerd container-loss investigation forme
 `docs/phase2-resume.md`, which was never actually caused by secretsman. See that repo's
 `investigations/` directory, not this one, for anything host-level going forward.
 
+**Projects live at `/projects/<name>`, never `~/projects`.** `/projects` is the bind-mounted
+path that survives container rebuilds; `~/projects` is a plain, ephemeral directory on the
+container's own filesystem. This repo's real work has always correctly been at
+`/projects/unraid-secretsman`, but an early setup prompt named the wrong path and left a stray,
+empty (zero files), non-git skeleton at `~/projects/unraid-secretsman` — found 2026-08-26 while
+fixing the same mistake in `unraid-ops`. **Not removed as of this note** — `rm -rf` on it was
+blocked by this sandbox's own permission mode, twice; it's harmless (empty, no git history, no
+real content) but still there. If you're reading this and it still exists, `rm -rf
+~/projects` is safe to run once outside this restriction. If a future session ever lands in
+`~/projects` for real work, that's the mistake recurring, not a valid alternate location.
+
 ## Non-negotiable design rules
 
 1. **FAIL CLOSED.** An unresolvable token aborts container creation with a visible error. A
