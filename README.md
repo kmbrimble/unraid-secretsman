@@ -62,8 +62,7 @@ source until you explicitly click Reveal on that one row; every other view only 
 length. The page also scans your saved templates and flags any `!secret` token that doesn't
 match a stored secret, or doesn't parse at all — the two mistakes that used to fail silently.
 
-<!-- TODO: drop a screenshot of the Settings page in as docs/screenshot-settings-page.png and
-     reference it here, e.g. ![SecretsMan settings page](docs/screenshot-settings-page.png) -->
+![SecretsMan settings page](docs/screenshot-settings-page.png)
 
 The store also stays hand-editable at `/mnt/user/appdata/.secrets/store.json` — the page is an
 alternative, not a replacement.

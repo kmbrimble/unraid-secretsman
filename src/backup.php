@@ -33,6 +33,22 @@ declare(strict_types=1);
 const SECRETSMAN_BACKUP_OPENSSL_ITER = 600000;
 const SECRETSMAN_BACKUP_NAME_PREFIX = 'secretsman-backup-';
 
+/**
+ * PBKDF2 iteration count for both the archive encryption and the HMAC
+ * sidecar key. Test-only override: running the full suite at production
+ * strength did ~40s of near-continuous CPU (real openssl subprocesses,
+ * dozens of create/verify/restore round-trips), which measurably degraded
+ * this host's own network responsiveness while it ran — an observed
+ * incident, not a hypothetical. tests/run.php sets the override once for
+ * the whole run; nothing the shipped .plg or install scripts touch ever
+ * sets it, so a real backup always gets the full count.
+ */
+function secretsman_backup_openssl_iter(): int
+{
+    $override = getenv('SECRETSMAN_BACKUP_OPENSSL_ITER_TEST_ONLY');
+    return $override !== false ? max(1, (int) $override) : SECRETSMAN_BACKUP_OPENSSL_ITER;
+}
+
 /** Flash config: destination, schedule, retention, last-run status. Not sensitive. */
 function secretsman_backup_config_path(): string
 {
@@ -203,7 +219,7 @@ function secretsman_backup_openssl_salt(string $archivePath): string
 
 function secretsman_backup_openssl_mac_key(string $password, string $salt): string
 {
-    return hash_pbkdf2('sha256', $password, $salt . ':secretsman-hmac', SECRETSMAN_BACKUP_OPENSSL_ITER, 32, true);
+    return hash_pbkdf2('sha256', $password, $salt . ':secretsman-hmac', secretsman_backup_openssl_iter(), 32, true);
 }
 
 function secretsman_backup_openssl_hmac_path(string $archivePath): string
@@ -258,7 +274,7 @@ function secretsman_backup_readme(string $tool, string $archiveName): string
             TXT;
     }
 
-    $iter = SECRETSMAN_BACKUP_OPENSSL_ITER;
+    $iter = secretsman_backup_openssl_iter();
     return <<<TXT
         secretsman backup — restore instructions
         =========================================
@@ -331,7 +347,7 @@ function secretsman_backup_create(string $storePath, string $password, string $d
                 throw new SecretsmanError('secretsman: tar failed: ' . trim($stderr));
             }
             [$exit, , $stderr] = secretsman_backup_run([
-                'openssl', 'enc', '-aes-256-cbc', '-pbkdf2', '-iter', (string)SECRETSMAN_BACKUP_OPENSSL_ITER,
+                'openssl', 'enc', '-aes-256-cbc', '-pbkdf2', '-iter', (string)secretsman_backup_openssl_iter(),
                 '-salt', '-in', $tarPath, '-out', $archivePath, '-pass', 'stdin',
             ], $password . "\n");
             @unlink($tarPath);
@@ -414,7 +430,7 @@ function secretsman_backup_verify(string $archivePath, string $password): array
 
             $tarPath = $work . '/store.tar';
             [$exit, , $stderr] = secretsman_backup_run([
-                'openssl', 'enc', '-d', '-aes-256-cbc', '-pbkdf2', '-iter', (string)SECRETSMAN_BACKUP_OPENSSL_ITER,
+                'openssl', 'enc', '-d', '-aes-256-cbc', '-pbkdf2', '-iter', (string)secretsman_backup_openssl_iter(),
                 '-in', $archivePath, '-out', $tarPath, '-pass', 'stdin',
             ], $password . "\n");
             if ($exit !== 0 || !is_file($tarPath)) {

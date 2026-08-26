@@ -553,3 +553,22 @@ pattern already used for `src/` tests. New `web:`-prefixed tests cover: non-POST
 case, and — the one that mattered most — a `selected=../secret-outside.txt` traversal attempt
 against `backup_api.php restore`, asserting the file outside the configured destination is
 never reached.
+
+**Live incident (2026-08-26): running `tests/run.php` measurably degraded the host's own
+network responsiveness while it ran.** This assistant runs in a container on the same physical
+Unraid host it develops against, sharing the same CPU pool with no cgroup limit
+(`cpu.max` = `max`) — so CPU-bound work in this container competes directly with `nginx`/
+`php-fpm`/the array for the same cores, no different from load generated any other way on the
+box. The suite's dozens of backup create/verify/restore round-trips were each doing real
+`openssl enc -pbkdf2 -iter 600000` subprocess calls plus a matching `hash_pbkdf2()` for the HMAC
+sidecar key — production-strength PBKDF2, at full cost, every time, just to prove functional
+correctness (wrong password rejected, tampering detected) that doesn't need brute-force
+resistance to demonstrate. Measured: ~43.5s of near-continuous CPU across a 48.5s run. Fixed by
+making the iteration count overridable — `secretsman_backup_openssl_iter()` in `src/backup.php`
+reads `SECRETSMAN_BACKUP_OPENSSL_ITER_TEST_ONLY`, falling back to the real
+`SECRETSMAN_BACKUP_OPENSSL_ITER` (600,000) constant when unset; `tests/run.php` sets it to 1000
+once, globally, for the whole run (inherited by every subprocess it spawns, including via
+`run_web_script()`). Nothing the shipped `.plg` or install scripts touch ever sets this env var,
+so a real backup always gets the full count regardless. Result: 48.5s → 4.9s wall,
+43.5s → 0.27s CPU, same 125/125 passing. **If a future test run causes this again, don't reach
+for `nice`/`ionice` as the fix — find and remove the actual CPU cost, the way this one was.**

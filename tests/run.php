@@ -7,6 +7,19 @@ declare(strict_types=1);
 require __DIR__ . '/../src/secretsman.php';
 require __DIR__ . '/../src/patch.php';
 require __DIR__ . '/../src/backup.php';
+
+// Real PBKDF2 strength (600,000 iterations) across the dozens of
+// create/verify/restore round-trips in this suite took ~40s of
+// near-continuous CPU — on a shared, unthrottled host this measurably
+// degraded live network responsiveness while the suite ran (an observed
+// incident, not a hypothetical). 1000 iterations still exercises the same
+// code paths and the same correctness properties (wrong password rejected,
+// tampering detected) without needing production-strength brute-force
+// resistance just to prove that. Set once, for the whole run — every
+// subprocess this suite spawns (including via run_web_script()) inherits
+// it. Never set anywhere the shipped .plg or install scripts touch.
+putenv('SECRETSMAN_BACKUP_OPENSSL_ITER_TEST_ONLY=1000');
+
 require __DIR__ . '/../plugin/scripts/common.php';
 require __DIR__ . '/../plugin/scripts/apply_patch.php';
 require __DIR__ . '/../plugin/scripts/uninstall.php';
