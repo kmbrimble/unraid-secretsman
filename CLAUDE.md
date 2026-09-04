@@ -1,8 +1,16 @@
 # unraid-secretsman — CLAUDE.md
 
+## What this project is
+
 Central secret storage for Unraid Docker templates. See `README.md` for what this is and why;
 this file is the design record and phase roadmap for whoever (human or Claude) picks this up
 next.
+
+Stack: plain PHP (targets 8.1 and 8.4), no framework, no Composer, no dependencies beyond what
+Unraid already ships. `src/` is the resolver/patch/backup library; `plugin/` is the tree as
+installed at `/usr/local/emhttp/plugins/unraid-secretsman/` (`plugin/src` and `plugin/reference`
+are symlinks back to the top level — see "Repo layout note"); `tests/` is a hand-rolled assert
+runner plus an on-host render harness. Ships as a self-hosted `.plg` + `.txz`.
 
 **Host-level work that isn't about this plugin now lives in `kmbrimble/unraid-ops`** (private
 repo) — most notably the dockerd/containerd container-loss investigation formerly tracked in
@@ -20,7 +28,7 @@ real content) but still there. If you're reading this and it still exists, `rm -
 ~/projects` is safe to run once outside this restriction. If a future session ever lands in
 `~/projects` for real work, that's the mistake recurring, not a valid alternate location.
 
-## Non-negotiable design rules
+## Non-negotiable constraints
 
 1. **FAIL CLOSED.** An unresolvable token aborts container creation with a visible error. A
    literal `!secret foo/bar` must NEVER be passed through as a variable value. This governs
@@ -220,8 +228,9 @@ Not going into Community Applications. Self-hosted `.plg` installed by URL from
 `raw.githubusercontent.com`, with a packaged `.txz` attached to a GitHub Release. The `.plg`'s
 version entity and md5 are bumped per release via `scripts/build-plugin.sh`, which assembles
 the installable tree (resolving the repo's `plugin/src` → `../src` symlink into real files —
-see "Repo layout" below) and prints the exact next manual steps. **No release has been cut yet**
-— see the Phase 2 roadmap entry above for why that's deliberate.
+see "Repo layout" below) and prints the exact next manual steps. **v1.0.0 was released
+2026-08-26 and is installed on this host** (`gh release list`; `/boot/config/plugins/`). See
+"Deploy and verify" below for the release procedure.
 
 ### Repo layout note
 
@@ -555,7 +564,7 @@ initially treated as a possible dead end while a different symptom was chased �
 were the same bug. An unexplained hang on a path that's about to ship is itself a finding worth
 chasing to ground, not a detail to park while looking for something louder.
 
-## Testing
+## Test command
 
 `php tests/run.php` — no framework, no fixtures beyond what's inline in the test file (plus
 `tests/harness/fixtures/`, both throwaway/synthetic). All fixture values are obviously-fake
@@ -603,3 +612,119 @@ once, globally, for the whole run (inherited by every subprocess it spawns, incl
 so a real backup always gets the full count regardless. Result: 48.5s → 4.9s wall,
 43.5s → 0.27s CPU, same 125/125 passing. **If a future test run causes this again, don't reach
 for `nice`/`ionice` as the fix — find and remove the actual CPU cost, the way this one was.**
+
+## Deploy and verify
+
+Nothing ships on a green push. CI (`.github/workflows/ci.yml`) runs `php -l` and
+`php tests/run.php` on PHP 8.1 and 8.4 — that is all of it.
+
+Releasing is manual and only on the user's explicit say-so:
+
+1. **Rule 7 gate.** If the change touches the patch layer at all, re-run the `RECOVERY.md`
+   drill and confirm it works before anything ships. This is not optional.
+2. `scripts/build-plugin.sh` — builds `dist/unraid-secretsman-<version>.txz`, prints the md5.
+   `dist/` is gitignored; artifacts are release assets, not repo contents.
+3. Bump `&version;` and `&md5;` in `unraid-secretsman.plg` by hand; commit; push.
+4. `gh release create v<version> dist/unraid-secretsman-<version>.txz dist/unraid-secretsman.md5`.
+5. Install on the host: Plugins → Install Plugin with
+   `https://raw.githubusercontent.com/kmbrimble/unraid-secretsman/main/unraid-secretsman.plg`.
+   Verify by actually running the install from a clean slate — never by pre-placing files (see
+   "Standing rule" above).
+6. After install, confirm `Helpers.php` is patched and a container still creates. The `.plg`
+   re-patches on every boot because `/usr/local/emhttp` is restored from the OS image; a release
+   that patches correctly once but not at boot is still broken.
+
+Currently released and installed on this host: **v1.0.0** (released 2026-08-26). The live store
+is `/mnt/user/appdata/.secrets/store.json`, `root:root 0600`.
+
+## Code review
+
+For `code-diff-reviewer` / `code-audit` / `code-security-audit`. Verified live 2026-09-04.
+
+**Exposure: LAN-only, behind the Unraid webGUI login.** `SecretsMan.page` and everything under
+`plugin/scripts/` is served by the host's own nginx, which binds `192.168.0.10:81`,
+`192.168.66.10:81` and loopback only (`USE_SSL="no"` in `/boot/config/ident.cfg`, so :443 is
+loopback-only). There is no tunnel route, no reverse-proxy route and no port forward reaching
+it: `unraid.kiztigs.com` is NXDOMAIN at Cloudflare's own nameservers, and the single enabled
+Nginx Proxy Manager entry for that name forwards to `172.17.0.1:81`, where nothing listens.
+Unraid Connect remote access is unconfigured (`myservers.cfg` is 0 bytes) and the Tailscale
+plugin sits in `plugins-removed`. Every request passes nginx's global
+`auth_request /auth-request.php` — an unauthenticated GET to
+`/plugins/unraid-secretsman/scripts/store_api.php` returns `302 → /login`. **Not
+internet-facing; do not escalate on exposure alone.** The threat model this plugin actually
+targets is a template or a `docker run` command line leaking a secret, not a remote attacker —
+see rules 3 and 6.
+
+**Modules that own data users rely on:**
+
+- `secretsman_store_set()` / `secretsman_store_delete()` / the save path in
+  `src/secretsman.php` — the only writers of `/mnt/user/appdata/.secrets/store.json`, which is
+  the single copy of every secret on this host. Corrupt or truncate it and every container whose
+  template carries a `!secret` token fails to create. Writes are tmp+rename with an explicit
+  shape validation on load; keep both.
+- `src/backup.php` — the only recovery path for that store: create (7z or openssl+HMAC sidecar),
+  verify, restore, and the retention sweep, which `@unlink`s archives, their HMAC sidecars and
+  READMEs. A bug in the sweep destroys the backups; a bug in restore overwrites the live store
+  with the wrong contents.
+- `plugin/scripts/backup_api.php` `case 'restore'` — consumes an attacker-controlled `selected`
+  filename and a base64 body. Its path-traversal guard is the boundary, and is the one web-layer
+  behaviour with a dedicated test.
+- `src/patch.php` with `plugin/scripts/apply_patch.php` and `plugin/scripts/uninstall.php` —
+  these rewrite a **stock Unraid file**,
+  `/usr/local/emhttp/plugins/dynamix.docker.manager/include/Helpers.php`. A bad patch breaks
+  Docker container creation host-wide, for every container, not just ones using secrets. The
+  hash gate (rule 4) and `RECOVERY.md` exist for exactly this.
+- `plugin/scripts/backup_cron_register.php` — writes
+  `/boot/config/plugins/unraid-secretsman/unraid-secretsman.cron` on the flash drive, which
+  persists across reboots.
+
+**Infrastructure this repo depends on but does not contain.** A reviewer seeing "nothing in this
+repo implements X" for any of these is wrong:
+
+- **CSRF and authentication are enforced upstream** — `webGui/include/local_prepend.php`
+  (Unraid's global `auto_prepend_file`) validates and then *consumes* the token, and nginx's
+  `auth_request` gates the session. `store_api.php` and `backup_api.php` deliberately check
+  neither; a second CSRF check would 403 every legitimate request. This is a known false
+  positive, and it has already been made once.
+- **`xmlToCommand()` in dockerMan's `Helpers.php`** — the function this plugin patches. The
+  resolver's whole contract (rule 6: a resolved secret never enters `$cmd`) is about that
+  function's behaviour, and the file is not in this repo. `reference/7.3.x/` holds a copy for
+  hashing, not for execution.
+- **`/usr/local/emhttp` is restored from the OS image on every boot**, which is why the patch is
+  re-applied at boot rather than persisted. Code that looks like it re-does work needlessly is
+  usually this.
+- **The Unraid plugin manager** verifies the `.txz` against the `<MD5>` declared in the `.plg`.
+- **`openssl` and `7z`/`tar` on the host** — `src/backup.php` shells out to them; the PBKDF2
+  iteration count is real work done by `openssl`, not by PHP.
+- **This host's nginx `auth_request` times out on any multipart POST** — see the standing note
+  above. Base64-over-urlencoded is not a quirk of this code, it is the only transport that works
+  here.
+
+**Test reality.** `php tests/run.php` — 127 checks as of 2026-09-04, no framework, all
+under the **CLI SAPI**.
+
+Well covered: `src/secretsman.php` (token grammar, store load and validation, field-type scope,
+tmpfs materialisation, `secretsman_resolve()`), `src/patch.php` (apply/revert/verify, hash gate),
+`src/backup.php` (create/verify/restore round-trips, retention), and
+`plugin/scripts/apply_patch.php`, `uninstall.php`, `backup_cron_register.php`.
+
+Thin or absent:
+
+- **The web dispatchers are barely covered.** Seven `web:` tests exist, run as real subprocesses
+  via `run_web_script()`. They cover `store_api.php` (non-POST reject, `list`, unknown action)
+  and `backup_api.php` (`list`, the `restore` traversal attempt, invalid base64, oversized POST).
+  **`store_api.php`'s `add`, `edit`, `delete` and `reveal` — every write action and the one that
+  returns a plaintext secret — have no dispatcher-level test**, and neither do `backup_api.php`'s
+  `config_set` and `backup_now`. The underlying `src/` functions are tested; the dispatch,
+  argument handling and error paths around them are not.
+- **`plugin/scripts/backup_download.php` has zero test references.**
+- **`plugin/SecretsMan.page` (431 lines) has no harness at all.**
+- **The suite cannot catch a php-fpm-only defect** — it runs exclusively under CLI, where
+  `STDOUT`/`STDERR`/`$argv` are all defined. This is rule 8, and it has already bitten three
+  times.
+- `tests/harness/regression.php` is a second layer that is **not run by CI** — it is manual,
+  on-host, read-only, against real templates.
+
+**A change to `plugin/scripts/*.php` or `SecretsMan.page` with no new `web:` test is the
+strongest defect signal available in this repo.** Say so rather than assuming the `src/` tests
+cover it.
