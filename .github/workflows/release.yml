@@ -104,6 +104,33 @@ jobs:
           }
           echo "CHANGES entry records the RECOVERY drill — gate satisfied."
 
+      # Unraid compares plugin versions with strcmp, not semantically
+      # (dynamix.plugin.manager/scripts/plugin: `strcmp($version, $installed_version) < 0`
+      # -> "not installing older version"). So 1.0.10 sorts BEFORE 1.0.9, and this
+      # plugin's own switch from date-based to semantic versioning put every 1.x
+      # release behind 2026.08.25 for anyone already running one. A release nobody
+      # can install is worse than a failed one.
+      - name: Version must sort after the previous tag the way Unraid compares it
+        run: |
+          set -euo pipefail
+          PREV=$(git tag --list 'v*' --sort=-v:refname | head -n1 | sed 's|^v||')
+          if [ -z "$PREV" ]; then
+            echo "No previous tag — ordering check not applicable."
+            exit 0
+          fi
+          python3 - "$PREV" "$VERSION" <<'PY'
+          import sys
+          prev, new = sys.argv[1], sys.argv[2]
+          if not new > prev:
+              sys.exit(
+                  f"::error::Unraid compares plugin versions with strcmp, and {new!r} does not "
+                  f"sort after the installed {prev!r}. The plugin manager would refuse it as an "
+                  f"older version. Pick a version that sorts higher as a plain string "
+                  f"(zero-pad rather than letting a component reach double digits)."
+              )
+          print(f"{new} sorts after {prev} — installable.")
+          PY
+
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.4'

@@ -5,8 +5,16 @@
 # no route to 192.168.0.10. Run it from the claude-code container after the
 # Release workflow has published a version.
 #
-# Usage: scripts/install-on-host.sh [version]
+# Usage: scripts/install-on-host.sh [version] [--forced]
 #   version defaults to the &version; entity in the local .plg.
+#   --forced passes Unraid's own "forced" argument, which is needed exactly once
+#   when the new version does not sort AFTER the installed one under strcmp.
+#   Unraid compares plugin versions as plain strings
+#   (dynamix.plugin.manager/scripts/plugin: strcmp($version, $installed_version) < 0
+#   -> "not installing older version"), so "1.0.10" is older than "1.0.9" to it,
+#   and anything numbered 1.x is older than a date-based 2026.08.25. This script
+#   checks for that before it tries, and says which flag to add rather than
+#   leaving you to decode "not installing older version".
 #
 # Env: UNRAID_HOST (default 192.168.0.10), UNRAID_SSH_KEY (default
 #      /root/.ssh/unraid_secretsman).
@@ -34,7 +42,15 @@ HOST="${UNRAID_HOST:-192.168.0.10}"
 SSH_KEY="${UNRAID_SSH_KEY:-/root/.ssh/unraid_secretsman}"
 SSH=(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "root@$HOST")
 
-VERSION="${1:-$(sed -rn 's|^<!ENTITY version[[:space:]]+"([^"]+)">.*|\1|p' "$REPO_ROOT/$PLG")}"
+FORCED=""
+VERSION=""
+for arg in "$@"; do
+  case "$arg" in
+    --forced|--force) FORCED="forced" ;;
+    *) VERSION="$arg" ;;
+  esac
+done
+[ -n "$VERSION" ] || VERSION=$(sed -rn 's|^<!ENTITY version[[:space:]]+"([^"]+)">.*|\1|p' "$REPO_ROOT/$PLG")
 [ -n "$VERSION" ] || { echo "could not determine version"; exit 1; }
 
 echo "==> Release v$VERSION"
@@ -59,8 +75,27 @@ for i in $(seq 1 40); do
   sleep 15
 done
 
+echo "==> Checking how Unraid will compare this against what is installed"
+INSTALLED=$("${SSH[@]}" "sed -rn 's|^<!ENTITY version[[:space:]]+\"([^\"]+)\">.*|\\1|p' /boot/config/plugins/unraid-secretsman.plg 2>/dev/null" || true)
+if [ -z "$INSTALLED" ]; then
+  echo "    nothing installed yet — a clean install"
+elif python3 -c 'import sys; sys.exit(0 if sys.argv[2] > sys.argv[1] else 1)' "$INSTALLED" "$VERSION"; then
+  echo "    installed $INSTALLED, new $VERSION — sorts newer, normal install"
+else
+  echo "    installed $INSTALLED, new $VERSION — strcmp puts the new one FIRST, so the"
+  echo "    plugin manager will refuse it as an older version."
+  if [ -z "$FORCED" ]; then
+    echo
+    echo "    This is not a corrupt package and not a reason to renumber the release."
+    echo "    Re-run with --forced to cross the line once:"
+    echo "        scripts/install-on-host.sh $VERSION --forced"
+    exit 1
+  fi
+  echo "    --forced given — crossing it."
+fi
+
 echo "==> Installing on $HOST"
-"${SSH[@]}" "plugin install '$PLG_URL'"
+"${SSH[@]}" "plugin install '$PLG_URL' $FORCED"
 
 echo "==> Verifying"
 "${SSH[@]}" bash -s -- "$NAME" "$VERSION" <<'REMOTE'

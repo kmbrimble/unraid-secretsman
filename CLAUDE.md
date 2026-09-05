@@ -72,6 +72,18 @@ real content) but still there. If you're reading this and it still exists, `rm -
    redundant CSRF check, and the `.plg` remove block's `-x` check on a script that's always
    invoked via `php <path>`, never executed directly.
 
+9. **No md5 sidecar file, and no md5 re-check in the `.plg`'s install script.** The plugin
+   manager already verifies the `.txz` against the `<MD5>` tag on its `FILE` block, in the
+   same function, on the branch that re-fetches on a mismatch. A `<FILE Name="&plgPATH;/&name;.md5">`
+   sidecar CANNOT be updated by a later release — the manager never overwrites an existing FILE
+   that declares no `MD5`/`SHA256` of its own — so it stays pinned to the first version ever
+   installed, and a script re-checking against it fails every subsequent upgrade with
+   `package md5 mismatch, refusing to install`. This silently blocked 1.0.0 and 1.0.1 from ever
+   reaching this host; the host sat on 2026.08.25 for two releases while `gh release list` said
+   otherwise. Removed in 1.0.2, which also deletes the orphaned sidecar. `docker.netman` hit the
+   identical bug and removed it in its 0.2.0 — see that repo's CLAUDE.md "Plugin manager quirk".
+
+
 ## Phase 0 recon (2026-08-24, read-only against the live host)
 
 Host: Unraid 7.3.1, kernel 6.18.33, PHP 8.4.21.
@@ -252,6 +264,21 @@ size of every stock plugin beside it (issue #2). Keep the packaged file to the s
 `**Name**`, blank line, one paragraph, no headings, and nothing long enough to trip the page's
 readmore collapse (`maxHeight:80`). Repo docs go in the repo README; they are not the plugin's
 description.
+
+### Version numbers are compared with strcmp, not semantically
+
+`dynamix.plugin.manager/scripts/plugin` decides whether an install is an upgrade with
+`strcmp($version, $installed_version) < 0`, printing `plugin: not installing older version`
+when it is not. That is a plain string comparison. Two consequences, both hit here:
+
+- The 1.0.0 switch from date-based to semantic versioning put every `1.x` release *behind* the
+  installed `2026.08.25`. Crossing that line needs Unraid's own `forced` argument, exactly once.
+- `1.0.10` is older than `1.0.9` to Unraid. Keep components single-digit, or zero-pad.
+
+Enforced, not remembered: `.github/workflows/release.yml` refuses to publish a version that does
+not sort after the previous tag as a plain string, and `scripts/install-on-host.sh` compares the
+new version against the host's installed one before trying, naming `--forced` when crossing a
+boundary is actually what you want.
 
 ### Standing rule: verify the `.plg` install by actually running it, never by pre-placing files
 
@@ -675,7 +702,10 @@ until a container fails to create. A failure there is a failed release, not a fl
 The standing rule below still holds and is not weakened by any of this: verify a `.plg` install
 by actually running it, never by pre-placing files.
 
-Currently released and installed on this host: **v1.0.1**. The live store is
+Currently released and installed on this host: **v1.0.2**. Everything before it was
+released but never installed: the host ran 2026.08.25 until 1.0.2, for the sidecar reason in
+constraint 9. Do not trust `gh release list` as evidence of what is on the host — check
+`/boot/config/plugins/unraid-secretsman.plg`. The live store is
 `/mnt/user/appdata/.secrets/store.json`, `root:root 0600`.
 
 ## Code review
