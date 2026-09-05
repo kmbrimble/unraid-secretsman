@@ -2,10 +2,11 @@
 # Assembles the installable plugin tree and packages it as a .txz + .md5,
 # for attaching to a GitHub Release (see CLAUDE.md "Shipping model").
 #
-# NOT run automatically by anything — a deliberate, manual release step.
-# Building a package is not the same as publishing it: this script only
-# produces local files; cutting the actual GitHub Release is a separate,
-# explicit action.
+# Run by .github/workflows/release.yml on every push to main that names an
+# untagged &version;, and available locally for a test build (needs xz, which
+# the claude-code container does not have). Building a package is not the same
+# as publishing it: this script only produces local files — it neither tags nor
+# publishes anything. See CLAUDE.md "Deploy and verify".
 #
 # Usage: scripts/build-plugin.sh [version]
 #   version defaults to today's date (YYYY.MM.DD), matching the .plg's
@@ -70,7 +71,9 @@ echo "$MD5" > "$OUT_DIR/$NAME.md5"
 echo "Built: $TXZ_PATH"
 echo "  md5: $MD5"
 echo
-echo "Next (manual, not run by this script):"
-echo "  1. Update unraid-secretsman.plg: &version; to $VERSION, &md5; to $MD5"
-echo "  2. git commit the updated .plg"
-echo "  3. gh release create v$VERSION $TXZ_PATH $OUT_DIR/$NAME.md5"
+echo "This is a local build. Releasing is automatic and does not use it:"
+echo "  bump &version; in unraid-secretsman.plg to the new version, write its ###<version>"
+echo "  CHANGES entry, and push to main. .github/workflows/release.yml builds, writes"
+echo "  the real &md5; back into the .plg, tags v<version> and publishes the release."
+echo "  Then run scripts/install-on-host.sh to put it on the Unraid host."
+echo "  See CLAUDE.md \"Deploy and verify\"."

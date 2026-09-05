@@ -1,0 +1,176 @@
+name: Release
+
+# Releasing is no longer a manual ritual. Bump &version; in unraid-secretsman.plg,
+# add the matching ###<version> CHANGES entry, push to main — this workflow runs
+# the tests, packages the .txz, writes the real md5 back into the .plg, tags, and
+# publishes the GitHub Release with both assets attached.
+#
+# It is a no-op on any push whose &version; is already tagged, so ordinary commits
+# (and this workflow's own .plg commit) do nothing. Installing the release on the
+# Unraid host is the one step that cannot run here — GitHub's runners can't reach
+# it — see scripts/install-on-host.sh and CLAUDE.md "Deploy and verify".
+#
+# Rule 7 (CLAUDE.md) is enforced below rather than dropped: a release whose patch
+# layer changed since the last tag must say so in its own CHANGES entry.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read &version; and decide whether this is a release
+        id: v
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -rn 's|^<!ENTITY version[[:space:]]+"([^"]+)">.*|\1|p' unraid-secretsman.plg)
+          [ -n "$VERSION" ] || { echo "::error::could not read &version; from unraid-secretsman.plg"; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "v$VERSION is already tagged — nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "v$VERSION is not tagged yet — releasing."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: check
+    if: needs.check.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      NAME: unraid-secretsman
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # A release with no changelog entry is a release nobody can read. The
+      # CHANGES prose is written by hand as part of the change itself; only the
+      # mechanics below are automated.
+      - name: Require a CHANGES entry for this version
+        run: |
+          set -euo pipefail
+          grep -qx "###$VERSION" unraid-secretsman.plg || {
+            echo "::error::unraid-secretsman.plg has no '###$VERSION' entry in <CHANGES>. Write the changelog entry, then push."
+            exit 1
+          }
+
+      # Rule 7: the patch layer live-patches a stock Unraid file (dockerMan's
+      # Helpers.php) on every boot, so a change to it that has not been through
+      # RECOVERY.md's drill can leave a host unable to create a container. The
+      # drill needs a real host and cannot run on a GitHub runner — what CAN run
+      # here is the refusal to publish until the release's own CHANGES entry
+      # records that it was done. Write "RECOVERY drill:" plus the outcome.
+      - name: Rule 7 gate — patch-layer changes need the RECOVERY.md drill
+        run: |
+          set -euo pipefail
+          PREV=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+          if [ -z "$PREV" ]; then
+            echo "No previous tag — Rule 7 gate not applicable."
+            exit 0
+          fi
+          if git diff --quiet "$PREV" HEAD -- src/patch.php plugin/scripts/apply_patch.php plugin/scripts/uninstall.php; then
+            echo "Patch layer unchanged since $PREV — Rule 7 gate not applicable."
+            exit 0
+          fi
+          echo "Patch layer changed since $PREV:"
+          git diff --stat "$PREV" HEAD -- src/patch.php plugin/scripts/apply_patch.php plugin/scripts/uninstall.php
+          awk -v want="###$VERSION" '
+            $0 == want { inside = 1; next }
+            inside && /^###/ { exit }
+            inside { print }
+          ' unraid-secretsman.plg | grep -q 'RECOVERY drill:' || {
+            echo "::error::The patch layer changed since $PREV, so CLAUDE.md rule 7 applies: re-run the RECOVERY.md drill and record the outcome in the ###$VERSION CHANGES entry as 'RECOVERY drill: <result>'. Refusing to publish."
+            exit 1
+          }
+          echo "CHANGES entry records the RECOVERY drill — gate satisfied."
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: simplexml
+
+      # Same gate as ci.yml, repeated deliberately: a release must stand on its
+      # own checks, not on a green run of a sibling workflow it can't see.
+      - name: Lint
+        run: find src plugin tests -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Test
+        run: php tests/run.php
+
+      - name: Build the package
+        id: build
+        run: |
+          set -euo pipefail
+          scripts/build-plugin.sh "$VERSION"
+          MD5=$(md5sum "dist/$NAME-$VERSION.txz" | awk '{print $1}')
+          echo "md5=$MD5" >> "$GITHUB_OUTPUT"
+          echo "Built dist/$NAME-$VERSION.txz  md5=$MD5"
+
+      # The .plg's &md5; must match the package byte for byte — it is checked
+      # twice on this plugin, by the Unraid plugin manager and again by the .plg's
+      # own install script, which deletes the download and aborts on a mismatch.
+      # Computing it by hand was the step most likely to go wrong; it is now
+      # derived from the artefact that was just built.
+      - name: Write the real md5 into the .plg
+        run: |
+          set -euo pipefail
+          sed -ri 's|^(<!ENTITY md5[[:space:]]+)"[^"]*">|\1"${{ steps.build.outputs.md5 }}">|' unraid-secretsman.plg
+          grep -n 'ENTITY md5' unraid-secretsman.plg
+          test "$(sed -rn 's|^<!ENTITY md5[[:space:]]+"([^"]+)">.*|\1|p' unraid-secretsman.plg)" = "${{ steps.build.outputs.md5 }}"
+
+      - name: Commit the md5 and tag the release
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- unraid-secretsman.plg; then
+            git commit -m "Release v$VERSION: set &md5; to the built package's checksum" -- unraid-secretsman.plg
+            git push origin HEAD:main
+          fi
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          awk -v want="###$VERSION" '
+            $0 == want { inside = 1; next }
+            inside && /^###/ { exit }
+            inside { print }
+          ' unraid-secretsman.plg > /tmp/notes.md
+          gh release create "v$VERSION" \
+            "dist/$NAME-$VERSION.txz" "dist/$NAME.md5" \
+            --title "v$VERSION" --notes-file /tmp/notes.md
+
+      - name: Summary
+        run: |
+          {
+            echo "### Released v$VERSION"
+            echo
+            echo "- package: \`$NAME-$VERSION.txz\`"
+            echo "- md5: \`${{ steps.build.outputs.md5 }}\`"
+            echo
+            echo "Not yet installed on the Unraid host — run \`scripts/install-on-host.sh\` from the claude-code container."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -51,6 +51,10 @@ real content) but still there. If you're reading this and it still exists, `rm -
    point" below for how the resolver avoids this structurally, not by scrubbing after the fact.
 7. **Any change to the patch layer (Phase 2+) requires the recovery drill in `RECOVERY.md` to
    be re-run and confirmed working before that change ships.**
+   Enforced at release time since 1.0.1: `.github/workflows/release.yml` fails the release if
+   the patch layer changed since the previous tag and the new version's CHANGES entry does not
+   record the outcome on a line starting `RECOVERY drill:`.
+
 8. **A function reachable from both a CLI script and a web-request script must not assume
    CLI-only globals or semantics.** That means: no direct `STDOUT`/`STDERR` writes (undefined
    under php-fpm — write a `[$ok, $message]`-shaped result instead, and let the CLI-only
@@ -225,12 +229,11 @@ additive; narrowing it would be breaking** — so start narrow, widen only on a 
 ## Shipping model
 
 Not going into Community Applications. Self-hosted `.plg` installed by URL from
-`raw.githubusercontent.com`, with a packaged `.txz` attached to a GitHub Release. The `.plg`'s
-version entity and md5 are bumped per release via `scripts/build-plugin.sh`, which assembles
-the installable tree (resolving the repo's `plugin/src` → `../src` symlink into real files —
-see "Repo layout" below) and prints the exact next manual steps. **v1.0.0 was released
-2026-08-26 and is installed on this host** (`gh release list`; `/boot/config/plugins/`). See
-"Deploy and verify" below for the release procedure.
+`raw.githubusercontent.com`, with a packaged `.txz` attached to a GitHub Release. `scripts/build-plugin.sh` assembles
+the installable tree (resolving the repo's `plugin/src` → `../src` symlink into real files — see
+"Repo layout" below); since 1.0.1 it is CI that runs it, on every push to `main` that names an
+untagged `&version;`, and CI that writes the resulting md5 back into the `.plg`. See "Deploy and
+verify" below.
 
 ### Repo layout note
 
@@ -624,27 +627,56 @@ for `nice`/`ionice` as the fix — find and remove the actual CPU cost, the way 
 
 ## Deploy and verify
 
-Nothing ships on a green push. CI (`.github/workflows/ci.yml`) runs `php -l` and
-`php tests/run.php` on PHP 8.1 and 8.4 — that is all of it.
+**Releasing is automatic and needs nobody's say-so.** `.github/workflows/release.yml` watches
+`main`: when the `.plg`'s `&version;` entity names a version with no tag yet, it runs the Rule 7
+gate below, lints, runs the suite, runs `scripts/build-plugin.sh`, writes the built package's
+real md5 back into the `.plg`, commits that, tags `v<version>`, and publishes the GitHub Release
+with the `.txz` and `.md5` attached. Every other push is a no-op, the workflow's own md5 commit
+included — the tag check runs before anything else.
 
-Releasing is manual and only on the user's explicit say-so:
+A release is therefore: **bump `&version;`, write the `###<version>` CHANGES entry, push.** Three
+things stay by hand, deliberately:
 
-1. **Rule 7 gate.** If the change touches the patch layer at all, re-run the `RECOVERY.md`
-   drill and confirm it works before anything ships. This is not optional.
-2. `scripts/build-plugin.sh` — builds `dist/unraid-secretsman-<version>.txz`, prints the md5.
-   `dist/` is gitignored; artifacts are release assets, not repo contents.
-3. Bump `&version;` and `&md5;` in `unraid-secretsman.plg` by hand; commit; push.
-4. `gh release create v<version> dist/unraid-secretsman-<version>.txz dist/unraid-secretsman.md5`.
-5. Install on the host: Plugins → Install Plugin with
-   `https://raw.githubusercontent.com/kmbrimble/unraid-secretsman/main/unraid-secretsman.plg`.
-   Verify by actually running the install from a clean slate — never by pre-placing files (see
-   "Standing rule" above).
-6. After install, confirm `Helpers.php` is patched and a container still creates. The `.plg`
-   re-patches on every boot because `/usr/local/emhttp` is restored from the OS image; a release
-   that patches correctly once but not at boot is still broken.
+- **The CHANGES entry.** The workflow refuses to publish a version with no `###<version>` block
+  and uses that block verbatim as the release notes. A changelog is content, not mechanics;
+  generated from commit subjects it would be worthless.
+- **`&md5;` is not yours to compute.** Leave whatever is in the file. CI overwrites it with the
+  checksum of the package it just built, and asserts the two match before committing. This
+  plugin checks that md5 twice — once in the plugin manager, once in the `.plg`'s own install
+  script, which deletes the download and aborts on a mismatch — so a hand-typed value was the
+  step most likely to break an install outright.
+- **Rule 7, the recovery drill.** It needs a real host and cannot run on a GitHub runner. What
+  the workflow *can* do, and does, is refuse to publish: if `src/patch.php`,
+  `plugin/scripts/apply_patch.php` or `plugin/scripts/uninstall.php` changed since the previous
+  tag, the new version's CHANGES entry must contain a line starting `RECOVERY drill:` recording
+  the outcome, or the release fails. Automating the release did not delete rule 7; it turned it
+  from a habit into a gate.
 
-Currently released and installed on this host: **v1.0.0** (released 2026-08-26). The live store
-is `/mnt/user/appdata/.secrets/store.json`, `root:root 0600`.
+`dist/` is still gitignored — artifacts are release assets, not repo contents.
+`scripts/build-plugin.sh` still runs locally for a test build, but needs `xz`, which the
+claude-code container does not have and the runner does.
+
+CI (`.github/workflows/ci.yml`) is unchanged and still runs `php -l` and `php tests/run.php` on
+PHP 8.1 and 8.4 on every push. The release workflow repeats those checks rather than trusting a
+sibling workflow's result it cannot see.
+
+**Installing on the host is the one step CI cannot do** — GitHub's runners have no route to
+192.168.0.10. `scripts/install-on-host.sh` does it from the claude-code container, and running it
+is part of releasing, not a separate decision: it confirms the release exists, waits until the
+raw `.plg`'s own `&version;` *and* `&md5;` match the published release (raw.githubusercontent.com
+caches for 5 minutes; the sibling repo lost a release to a stale, internally-consistent edge once
+already), runs `plugin install <raw URL>` over SSH, then verifies the flash `.plg` version, the
+`/var/log/plugins` registration, the installed tree, **that `Helpers.php` actually carries the
+`SECRETSMAN-PATCH-BEGIN` marker**, and that the packaged README is still the stock-shaped
+description. That patch check is the point: `/usr/local/emhttp` is restored from the OS image on
+every boot, and an install that lands its files but fails to patch looks identical to a good one
+until a container fails to create. A failure there is a failed release, not a flaky script.
+
+The standing rule below still holds and is not weakened by any of this: verify a `.plg` install
+by actually running it, never by pre-placing files.
+
+Currently released and installed on this host: **v1.0.1**. The live store is
+`/mnt/user/appdata/.secrets/store.json`, `root:root 0600`.
 
 ## Code review
 
