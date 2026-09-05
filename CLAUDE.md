@@ -241,6 +241,15 @@ and "what ships"), and `plugin/` on its own already matches the real installed l
 resolves the symlinks into real files when it packages a release, since a `.txz` has no business
 shipping symlinks that only make sense inside this git checkout.
 
+`plugin/README.md` is a real file, not a symlink, and is deliberately NOT the repo's own
+`README.md`. `dynamix.plugin.manager/include/ShowPlugins.php` Markdown-renders
+`plugins/<name>/README.md` into a one-line description cell on the Plugins tab; packaging the
+repo README put its `# unraid-secretsman` H1 in there and rendered the row several times the
+size of every stock plugin beside it (issue #2). Keep the packaged file to the stock shape —
+`**Name**`, blank line, one paragraph, no headings, and nothing long enough to trip the page's
+readmore collapse (`maxHeight:80`). Repo docs go in the repo README; they are not the plugin's
+description.
+
 ### Standing rule: verify the `.plg` install by actually running it, never by pre-placing files
 
 A real Phase 2 Gate 2 boot failed because `scripts/build-plugin.sh` archived the package tree

@@ -51,7 +51,14 @@ cp "$REPO_ROOT"/plugin/*.page "$PKG_DIR/"
 # `plugins/{name}/README.md`, Markdown-rendered, falls back to just the bare
 # plugin name if absent) — confirmed missing was the entire reason no
 # description showed there.
-cp "$REPO_ROOT"/README.md "$PKG_DIR/"
+#
+# That slot is a one-line description in a shared table, NOT documentation, so
+# it gets its own file: plugin/README.md, following the stock convention of a
+# bold name plus one paragraph and no headings. Packaging the repo's own
+# README.md instead put its `# unraid-secretsman` H1 into that table and
+# rendered the row several times the size of every stock plugin beside it —
+# see issue #2.
+cp "$REPO_ROOT"/plugin/README.md "$PKG_DIR/"
 
 mkdir -p "$OUT_DIR"
 TXZ_PATH="$OUT_DIR/$NAME-$VERSION.txz"
