@@ -609,12 +609,16 @@ chasing to ground, not a detail to park while looking for something louder.
 plugin's own `secretsman_store_set()` under an `flock` on `store.json.lock`, leaving
 `store.json.bak-hl-*` backups (newest 20 kept) beside the store. Two consequences:
 
-- **The plugin's own writers take no lock.** `secretsman_store_set()`/`_delete()` (so the GUI's
-  `store_api.php`) do an unlocked read-modify-write, last-write-wins (see the docblock on
-  `secretsman_store_set`). An `hl` write landing between the GUI's load and its rename is lost,
-  and vice versa. Window is milliseconds and both are human-driven, so unfixed; the upgrade
-  is for `secretsman_store_set/_delete` to `flock` the same `store.json.lock`. Do that before
-  adding any automated writer.
+- **Every writer takes the same lock (since 1.0.3).** `secretsman_with_store_lock($path, $fn)` in
+  `src/secretsman.php` flocks `store.json.lock` (0600, 10 s then throws, reentrant per path within
+  a process). `secretsman_store_set/_delete` (so the GUI's `store_api.php`) and
+  `secretsman_backup_restore` (both modes) run their read-modify-write inside it. `hl secret put`
+  checks `function_exists('secretsman_with_store_lock')` and, when present, runs its whole
+  check→backup→set→read-back inside it and takes no lock of its own (output `lock=plugin`; `lock=hl`
+  means the plugin is older than 1.0.3). Readers stay lock-free: the atomic rename gives them a
+  whole file. Any new code path that writes `store.json` must go through the helper. The
+  concurrency tests spawn real child processes; they prove CLI behaviour only (rule 8 still applies
+  to anything web-reachable, and the helper uses no STDOUT/STDERR/`$argv`).
 - `store.json.bak-*` files in `.secrets/` are not from this plugin's backup feature; the
   retention sweep in `src/backup.php` only matches `secretsman-backup*` names, so they don't
   interact. Don't "tidy" them.

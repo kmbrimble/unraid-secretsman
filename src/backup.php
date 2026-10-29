@@ -466,6 +466,11 @@ function secretsman_backup_verify(string $archivePath, string $password): array
 function secretsman_backup_restore(string $archivePath, string $password, string $storePath, string $mode = 'replace'): array
 {
     $incoming = secretsman_backup_verify($archivePath, $password);
+    return secretsman_with_store_lock($storePath, fn() => secretsman_backup_restore_locked($incoming, $storePath, $mode));
+}
+
+function secretsman_backup_restore_locked(array $incoming, string $storePath, string $mode): array
+{
 
     if ($mode === 'replace') {
         $before = is_file($storePath) ? secretsman_load_store($storePath) : [];

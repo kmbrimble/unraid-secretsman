@@ -273,17 +273,79 @@ function secretsman_save_store(string $path, array $store): void
 }
 
 /**
+ * Run $fn holding an exclusive flock on "$path.lock" and return its value.
+ * Every read-modify-write of the store goes through this, so the GUI,
+ * restore and homelab-access's `hl secret put` (which calls this by name when
+ * it exists, and takes no lock of its own then) cannot lose each other's
+ * writes. Reentrant per path within one process: a nested call just runs $fn,
+ * because a second flock() on a fresh fd in the same process would deadlock.
+ * Gives up after 10s rather than hanging the caller. Readers stay lock-free —
+ * the atomic rename in secretsman_save_store() already gives them a whole file.
+ */
+function secretsman_with_store_lock(string $path, callable $fn)
+{
+    static $held = [];
+    if (!empty($held[$path])) {
+        return $fn();
+    }
+
+    $lockPath = $path . '.lock';
+    $dir = dirname($path);
+    if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
+        throw new SecretsmanError("secretsman: could not create directory {$dir}");
+    }
+    $oldUmask = umask(0077);
+    try {
+        $fh = @fopen($lockPath, 'c');
+    } finally {
+        umask($oldUmask);
+    }
+    if ($fh === false) {
+        throw new SecretsmanError("secretsman: could not open store lock {$lockPath}");
+    }
+    @chmod($lockPath, 0600);
+
+    try {
+        $got = false;
+        for ($i = 0; $i < 100; $i++) {
+            if (flock($fh, LOCK_EX | LOCK_NB)) {
+                $got = true;
+                break;
+            }
+            usleep(100000);
+        }
+        if (!$got) {
+            throw new SecretsmanError('secretsman: store is locked by another writer, try again');
+        }
+        $held[$path] = true;
+        try {
+            return $fn();
+        } finally {
+            unset($held[$path]);
+            flock($fh, LOCK_UN);
+        }
+    } finally {
+        fclose($fh);
+    }
+}
+
+/**
  * Add ($overwrite=false) or edit ($overwrite=true) one secret. Value
  * validation (string-only, no newline) is deliberately not duplicated here
  * — it happens inside secretsman_save_store()'s validate-via-load_store
  * step, so a bad value produces the resolver's own --env-file-framed
- * message. Read-modify-write is last-write-wins; an flock() on $path would
- * be the upgrade if this ever has concurrent editors.
+ * message. The read-modify-write runs under secretsman_with_store_lock().
  */
 function secretsman_store_set(string $path, string $ns, string $key, string $value, bool $overwrite = false): void
 {
     secretsman_check_name($ns, $key);
+    secretsman_with_store_lock($path, function () use ($path, $ns, $key, $value, $overwrite) {
+        secretsman_store_set_unlocked($path, $ns, $key, $value, $overwrite);
+    });
+}
 
+function secretsman_store_set_unlocked(string $path, string $ns, string $key, string $value, bool $overwrite): void
+{
     $store = is_file($path) ? secretsman_load_store($path) : [];
 
     if (!$overwrite && isset($store[$ns][$key])) {
@@ -299,6 +361,13 @@ function secretsman_store_set(string $path, string $ns, string $key, string $val
 
 /** Delete one secret; prunes the namespace too if it's now empty. */
 function secretsman_store_delete(string $path, string $ns, string $key): void
+{
+    secretsman_with_store_lock($path, function () use ($path, $ns, $key) {
+        secretsman_store_delete_unlocked($path, $ns, $key);
+    });
+}
+
+function secretsman_store_delete_unlocked(string $path, string $ns, string $key): void
 {
     $store = secretsman_load_store($path);
     secretsman_lookup($store, $ns, $key); // throws the resolver's own "no such ..." on a miss

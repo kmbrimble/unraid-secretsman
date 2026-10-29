@@ -671,6 +671,81 @@ t('delete: store_delete throws for a missing key, matching lookup()', function (
     assert_throws(fn() => secretsman_store_delete($path, 'ns', 'missing'), SecretsmanError::class, 'no such key');
 });
 
+function spawn_php_child(string $code, array $args = []): array
+{
+    $file = sys_get_temp_dir() . '/secretsman-test-child-' . bin2hex(random_bytes(8)) . '.php';
+    file_put_contents($file, "<?php\nrequire " . var_export(__DIR__ . '/../src/secretsman.php', true) . ";\n" . $code);
+    $proc = proc_open(array_merge(['php', $file], $args), [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    assert_true($proc !== false, 'could not start php child');
+    return [$proc, $pipes, $file];
+}
+
+function reap_php_child(array $child): string
+{
+    [$proc, $pipes, $file] = $child;
+    $out = stream_get_contents($pipes[1]);
+    $err = stream_get_contents($pipes[2]);
+    foreach ($pipes as $p) { fclose($p); }
+    proc_close($proc);
+    unlink($file);
+    return $out . $err;
+}
+
+t('lock: helper returns the callable\'s value and creates a 0600 lock file beside the store', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/store.json';
+    assert_eq(42, secretsman_with_store_lock($path, fn() => 42));
+    assert_eq('0600', substr(sprintf('%o', fileperms($path . '.lock')), -4));
+});
+
+t('lock: helper is reentrant (nested call and store_set inside it do not deadlock)', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/store.json';
+    $r = secretsman_with_store_lock($path, function () use ($path) {
+        secretsman_store_set($path, 'ns', 'k', 'v1');
+        return secretsman_with_store_lock($path, fn() => 'inner');
+    });
+    assert_eq('inner', $r);
+    assert_eq('v1', secretsman_lookup(secretsman_load_store($path), 'ns', 'k'));
+    assert_eq('0600', substr(sprintf('%o', fileperms($path)), -4));
+});
+
+t('lock: helper releases the lock when the callable throws', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/store.json';
+    assert_throws(fn() => secretsman_with_store_lock($path, function () { throw new SecretsmanError('boom'); }), SecretsmanError::class, 'boom');
+    assert_eq('ok', secretsman_with_store_lock($path, fn() => 'ok'));
+});
+
+t('lock: two processes doing store_set concurrently never lose a write (50 rounds)', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/store.json';
+    write_store($dir, ['seed' => ['k' => 'v']]);
+    $code = '$a = $argv; secretsman_store_set($a[1], "ns", $a[2], "v-" . $a[2]);';
+    for ($i = 0; $i < 50; $i++) {
+        $a = spawn_php_child($code, [$path, "a{$i}"]);
+        $b = spawn_php_child($code, [$path, "b{$i}"]);
+        $outA = reap_php_child($a);
+        $outB = reap_php_child($b);
+        assert_eq('', $outA . $outB, 'child failed');
+    }
+    $store = secretsman_load_store($path);
+    assert_eq(100, count($store['ns']), 'every concurrent write must survive');
+    assert_eq('0600', substr(sprintf('%o', fileperms($path)), -4));
+});
+
+t('lock: helper gives up after ~10s when another process holds the lock', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/store.json';
+    $holder = spawn_php_child('secretsman_with_store_lock($argv[1], function () { echo "held\n"; flush(); sleep(12); });', [$path]);
+    assert_eq("held\n", fgets($holder[1][1]), 'holder child never took the lock');
+    $t0 = microtime(true);
+    assert_throws(fn() => secretsman_with_store_lock($path, fn() => 'x'), SecretsmanError::class, 'locked by another writer');
+    $dt = microtime(true) - $t0;
+    assert_true($dt > 9 && $dt < 12, "timeout took {$dt}s, expected ~10s");
+    reap_php_child($holder);
+});
+
 function fixture_scan_template(string $dir, string $name, array $configEntries): void
 {
     $xml = "<?xml version=\"1.0\"?>\n<Container version=\"2\">\n  <Name>{$name}</Name>\n";
