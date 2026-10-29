@@ -603,6 +603,25 @@ initially treated as a possible dead end while a different symptom was chased â€
 were the same bug. An unexplained hang on a path that's about to ship is itself a finding worth
 chasing to ground, not a detail to park while looking for something louder.
 
+## Second writer: homelab-access (`hl secret put`)
+
+`store.json` has a writer outside this repo. The `hl` CLI (homelab-access) writes via this
+plugin's own `secretsman_store_set()` under an `flock` on `store.json.lock`, leaving
+`store.json.bak-hl-*` backups (newest 20 kept) beside the store. Two consequences:
+
+- **The plugin's own writers take no lock.** `secretsman_store_set()`/`_delete()` (so the GUI's
+  `store_api.php`) do an unlocked read-modify-write, last-write-wins (see the docblock on
+  `secretsman_store_set`). An `hl` write landing between the GUI's load and its rename is lost,
+  and vice versa. Window is milliseconds and both are human-driven, so unfixed; the upgrade
+  is for `secretsman_store_set/_delete` to `flock` the same `store.json.lock`. Do that before
+  adding any automated writer.
+- `store.json.bak-*` files in `.secrets/` are not from this plugin's backup feature; the
+  retention sweep in `src/backup.php` only matches `secretsman-backup*` names, so they don't
+  interact. Don't "tidy" them.
+
+Host access from this repo's sessions: `ssh unraid` (used by `scripts/install-on-host.sh`) and
+`hl exec --endpoint unraid-api -- <cmd>` for the GraphQL API (`:81`). There is no `.env`.
+
 ## Test command
 
 `php tests/run.php` â€” no framework, no fixtures beyond what's inline in the test file (plus

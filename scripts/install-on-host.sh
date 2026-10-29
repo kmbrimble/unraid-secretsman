@@ -16,8 +16,9 @@
 #   checks for that before it tries, and says which flag to add rather than
 #   leaving you to decode "not installing older version".
 #
-# Env: UNRAID_HOST (default 192.168.0.10), UNRAID_SSH_KEY (default
-#      /root/.ssh/unraid_secretsman).
+# Connection: uses the `unraid` ssh alias (~/.ssh/config) by default. Other users
+#      without that alias can set UNRAID_HOST (and optionally UNRAID_SSH_KEY) and
+#      the script connects as root@$UNRAID_HOST instead.
 #
 # raw.githubusercontent.com caches for max-age=300, and a 200 seconds after a
 # push does NOT mean the CDN edge the host hits has the new body — see the
@@ -38,9 +39,13 @@ NAME="unraid-secretsman"
 PLG="$NAME.plg"
 GH_REPO="kmbrimble/unraid-secretsman"
 PLG_URL="https://raw.githubusercontent.com/$GH_REPO/main/$PLG"
-HOST="${UNRAID_HOST:-192.168.0.10}"
-SSH_KEY="${UNRAID_SSH_KEY:-/root/.ssh/unraid_secretsman}"
-SSH=(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "root@$HOST")
+if [ -n "${UNRAID_HOST:-}" ]; then
+  HOST="$UNRAID_HOST"
+  SSH=(ssh -o StrictHostKeyChecking=no ${UNRAID_SSH_KEY:+-i "$UNRAID_SSH_KEY"} "root@$HOST")
+else
+  HOST="unraid"
+  SSH=(ssh unraid)
+fi
 
 FORCED=""
 VERSION=""
