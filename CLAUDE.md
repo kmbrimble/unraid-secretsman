@@ -725,7 +725,7 @@ until a container fails to create. A failure there is a failed release, not a fl
 The standing rule below still holds and is not weakened by any of this: verify a `.plg` install
 by actually running it, never by pre-placing files.
 
-Currently released and installed on this host: **v1.0.2**. Everything before it was
+Currently released and installed on this host: **v1.0.3** (verified 2026-10-29). Everything before it was
 released but never installed: the host ran 2026.08.25 until 1.0.2, for the sidecar reason in
 constraint 9. Do not trust `gh release list` as evidence of what is on the host — check
 `/boot/config/plugins/unraid-secretsman.plg`. The live store is
@@ -794,7 +794,7 @@ repo implements X" for any of these is wrong:
   above. Base64-over-urlencoded is not a quirk of this code, it is the only transport that works
   here.
 
-**Test reality.** `php tests/run.php` — 127 checks as of 2026-09-04, no framework, all
+**Test reality.** `php tests/run.php` — 130 checks as of 2026-10-29, no framework, all
 under the **CLI SAPI**.
 
 Well covered: `src/secretsman.php` (token grammar, store load and validation, field-type scope,
