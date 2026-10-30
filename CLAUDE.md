@@ -86,7 +86,7 @@ real content) but still there. If you're reading this and it still exists, `rm -
 
 ## Phase 0 recon (2026-08-24, read-only against the live host)
 
-Host: Unraid 7.3.1, kernel 6.18.33, PHP 8.4.21.
+Host (recon, 2026-08-24): Unraid 7.3.1, kernel 6.18.33, PHP 8.4.21. **The host now runs Unraid 7.3.4** (`/etc/unraid-version`, checked 2026-10-30); its live `Helpers.php` equals upstream tag 7.3.4 and tag 7.3.1 byte-for-byte (md5 `9a45421b…`) apart from our patch block, which is why `reference/7.3.x/HASHES` covers it.
 
 - **The gate passed.** `@unraid/api` 4.34.0 (Connect / unraid-api stack) has no container-create
   GraphQL mutation. `DockerMutations` is `start, stop, pause, unpause, removeContainer,
@@ -218,6 +218,32 @@ follows, entirely by reading vendor scripts already on the host — no reboot, n
   `scripts/repopulate.php` therefore has exactly one job: win the race (guaranteed by the
   `disks_mounted` ordering above) and raise a clearer notification than the native syslog line —
   not implement blocking itself. See `plugin/scripts/repopulate.php`'s own header comment.
+
+## Adding a hash for a new Unraid version
+
+`apply_patch.php` maps `/etc/unraid-version` to `reference/<major>.<minor>.x/` (a pre-release
+suffix like `7.4.0-rc.2` maps to the same dir as `7.4.0`) and patches only if the live
+`Helpers.php` md5 is listed in that dir's `HASHES`. No dir, or no match: notification, host left
+unpatched. Upstream tags of `unraid/webgui` are a reliable hash source: verified 2026-10-30 that
+the live 7.3.4 file with our block reverted equals the 7.3.4 and 7.3.1 tags (md5 `9a45421b…`).
+
+**`reference/7.4.x/HASHES` holds the md5 of the RC tag 7.4.0-rc.2 only** (commit `26eb1b5c`,
+identical in 7.4.0-rc.2.3; `dcece361…`), added before the final release existed. **The final
+7.4.0 must be re-verified and its hash added** — the file can change between RC and final — and
+nobody has yet seen it run on a real 7.4 host. Procedure:
+
+1. `scripts/add-reference-hash.sh <tag> reference/<x>.<y>.x` — fetches the tag, fails unless the
+   anchor line occurs exactly once, lists `xmlToCommand()` call sites (expect 1 definition, 5
+   calls), prints the diff against the current reference and the HASHES line. Changes nothing.
+2. Read the diff by the `unraid-upgrade-reverify` skill's step 4 standard (does anything touch
+   the `Config` loop or the code before it?). Stop there if it does.
+3. Add the printed line (with its tag/commit comment) to `HASHES`, keeping older lines for hosts
+   still on them. Keep `Helpers.php` in that dir as a copy matching one listed hash (a test
+   checks it).
+4. `php tests/run.php`, bump `&version;`, CHANGES entry (including a truthful `RECOVERY drill:`
+   line if `apply_patch.php`/`patch.php`/`uninstall.php` changed), push.
+
+Never an anchor-only fallback: an unlisted hash is refused by design.
 
 ## Store format
 

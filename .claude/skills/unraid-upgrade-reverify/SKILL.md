@@ -53,7 +53,7 @@ defensive check added without reading the mechanism it duplicated.
 ### 1. Establish the new version and locate Helpers.php — don't assume the path
 
 Read `/etc/unraid-version` the same way `apply_patch.php`'s `detect_unraid_reference_dir()`
-does (regex on `version="X.Y.Z"`, mapped to this repo's `reference/X.Y.x/` convention). Then
+does (regex on `version="X.Y.Z"` or `X.Y.Z-rc.N`, mapped to this repo's `reference/X.Y.x/` convention). Then
 find the file that actually defines `xmlToCommand()` — don't assume it's still
 `dynamix.docker.manager/include/Helpers.php`:
 
@@ -131,6 +131,8 @@ it removes the one thing that catches that.
 
 ### 5. After go-ahead: stage the new reference copy and a patched scratch copy
 
+- Faster path for the hash/diff/anchor facts: `scripts/add-reference-hash.sh <webgui-tag>` (see
+  CLAUDE.md "Adding a hash for a new Unraid version"). It does not replace the step 4 gate.
 - Copy the new `Helpers.php` into `reference/<version>.x/Helpers.php`.
 - Compute its md5 and add it to `reference/<version>.x/HASHES`, following the existing file's
   format and header-comment convention (dated, one `Helpers.php  md5:<hash>` line).

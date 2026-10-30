@@ -90,7 +90,7 @@ store is left untouched, never silently overwritten).
 
 ## Compatibility
 
-Verified on **Unraid 7.3.1**. Other versions are not assumed compatible: the patch is
+Verified on **Unraid 7.3.1** and 7.3.4 (same `Helpers.php`); 7.4.0-rc.2 has a bundled hash but is untested on a real host. Other versions are not assumed compatible: the patch is
 checksum-guarded against known-good hashes in `reference/<version>/HASHES`, so on any version
 without a matching entry it **refuses to apply and raises a notification instead of patching
 blindly** — the system is left exactly as it was, not partially or incorrectly patched. See
