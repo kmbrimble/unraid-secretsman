@@ -1080,6 +1080,70 @@ t('patch: secretsman_patch_revert() round-trips the real reference/7.3.x/Helpers
     assert_eq($original, secretsman_patch_revert($patched));
 });
 
+t('reference: every reference/<x>.y.x/Helpers.php is accepted by its own HASHES and contains exactly one anchor', function () {
+    $dirs = glob(__DIR__ . '/../reference/*/', GLOB_ONLYDIR);
+    assert_true(count($dirs) >= 2, 'expected at least reference/7.3.x and reference/7.4.x');
+    foreach ($dirs as $d) {
+        $file = $d . 'Helpers.php';
+        $hashes = load_known_good_hashes($d . 'HASHES');
+        assert_true(in_array(md5_file($file), $hashes, true), "{$d}: Helpers.php md5 not listed in its HASHES");
+        $c = file_get_contents($file);
+        assert_eq(1, substr_count($c, SECRETSMAN_PATCH_ANCHOR), "{$d}: anchor must occur exactly once");
+    }
+});
+
+t('patch: reference/7.4.x (7.4.0-rc.2 tag) hash is the recorded upstream md5, patches, lints, and reverts to the exact original', function () {
+    $real = __DIR__ . '/../reference/7.4.x/Helpers.php';
+    $hashes = load_known_good_hashes(__DIR__ . '/../reference/7.4.x/HASHES');
+    assert_eq(['dcece361b88086baae0322d862db21a9'], $hashes);
+    $original = file_get_contents($real);
+    $patched = secretsman_patch_apply($original, '/plugin/dir/src/secretsman.php');
+    assert_eq(1, substr_count($patched, 'SECRETSMAN-PATCH-BEGIN'));
+    assert_true(strpos($patched, "secretsman_resolve(\$xml, \$xml['Name']);") !== false);
+    $tmp = tempnam(sys_get_temp_dir(), 'secretsman-lint-74-');
+    file_put_contents($tmp, $patched);
+    exec('php -l ' . escapeshellarg($tmp) . ' 2>&1', $out, $code);
+    unlink($tmp);
+    assert_eq(0, $code, 'patched 7.4.x Helpers.php must lint clean: ' . implode("\n", $out));
+    $reverted = secretsman_patch_revert($patched);
+    assert_eq($original, $reverted);
+    assert_eq($hashes[0], md5($reverted));
+});
+
+t('patch: apply_to_file() patches the 7.4.x reference, then refuses a modified copy and leaves it untouched', function () {
+    $dir = scratch_dir();
+    $hashes = load_known_good_hashes(__DIR__ . '/../reference/7.4.x/HASHES');
+    $path = $dir . '/Helpers.php';
+    copy(__DIR__ . '/../reference/7.4.x/Helpers.php', $path);
+    $r = secretsman_patch_apply_to_file($path, '/plugin/dir/src/secretsman.php', $hashes);
+    assert_eq('unpatched-known-good', $r['status']);
+    assert_true(secretsman_patch_is_applied(file_get_contents($path)));
+
+    $modified = $dir . '/Helpers-modified.php';
+    file_put_contents($modified, file_get_contents(__DIR__ . '/../reference/7.4.x/Helpers.php') . "\n// changed\n");
+    $before = file_get_contents($modified);
+    $r = secretsman_patch_apply_to_file($modified, '/plugin/dir/src/secretsman.php', $hashes);
+    assert_eq('mismatch', $r['status']);
+    assert_eq($before, file_get_contents($modified));
+});
+
+t('apply_patch: detect_unraid_reference_dir() maps 7.3.4, 7.4.0-rc.2 and 7.4.0 to the right dirs', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/unraid-version';
+    foreach (['7.3.4' => '7.3.x', '7.4.0-rc.2' => '7.4.x', '7.4.0-rc.2.3' => '7.4.x', '7.4.0' => '7.4.x', '7.4.1' => '7.4.x'] as $v => $want) {
+        file_put_contents($path, "version=\"{$v}\"\n");
+        assert_eq($want, detect_unraid_reference_dir($path), "version {$v}");
+        assert_true(is_file(__DIR__ . "/../reference/{$want}/HASHES"), "no bundled HASHES for {$want}");
+    }
+});
+
+t('apply_patch: detect_unraid_reference_dir() rejects a malformed pre-release suffix', function () {
+    $dir = scratch_dir();
+    $path = $dir . '/unraid-version';
+    file_put_contents($path, "version=\"7.4.0-rc 2\"\n");
+    assert_eq(null, detect_unraid_reference_dir($path));
+});
+
 t('apply_patch: detect_unraid_reference_dir() maps 7.3.1 to 7.3.x', function () {
     $dir = scratch_dir();
     $path = $dir . '/unraid-version';

@@ -1,0 +1,17 @@
+# Known-good hashes for reference/7.4.x source files.
+#
+# Same gate as reference/7.3.x/HASHES: the patch layer checksum-verifies the
+# live Helpers.php against these before injecting anything, and refuses
+# (with an Unraid notification) on mismatch. Never a whole-file replacement.
+#
+# Captured: 2026-10-30, from the upstream unraid/webgui tag 7.4.0-rc.2
+# (commit 26eb1b5c1d547ddbf44a38e63956ba24f659098b; tag 7.4.0-rc.2.3 has an
+# identical Helpers.php). NOT captured from a running 7.4 host.
+#
+# RELEASE CANDIDATE ONLY. The FINAL 7.4.0 release must be re-verified (diff
+# against this copy, anchor uniqueness, add its md5 as a second line) before
+# it is trusted -- the file can change between RC and final. Until then a
+# final-release host will be refused and left working unpatched.
+# See CLAUDE.md "Adding a hash for a new Unraid version".
+
+Helpers.php  md5:dcece361b88086baae0322d862db21a9

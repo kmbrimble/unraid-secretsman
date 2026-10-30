@@ -26,14 +26,18 @@ require_once __DIR__ . '/common.php';
 
 const UNRAID_VERSION_FILE = '/etc/unraid-version';
 
-/** Detect the running Unraid version's major.minor, mapped to our reference/<x>.<y>.x/ convention. */
+/**
+ * Detect the running Unraid version's major.minor, mapped to our reference/<x>.<y>.x/ convention.
+ * Pre-release suffixes (7.4.0-rc.2) map to the same dir as the final release; the HASHES file,
+ * not the dir name, is what decides whether a given Helpers.php is trusted.
+ */
 function detect_unraid_reference_dir(string $versionFile = UNRAID_VERSION_FILE): ?string
 {
     if (!is_file($versionFile)) {
         return null;
     }
     $contents = file_get_contents($versionFile);
-    if ($contents === false || !preg_match('/version="(\d+)\.(\d+)\.\d+"/', $contents, $m)) {
+    if ($contents === false || !preg_match('/version="(\d+)\.(\d+)\.\d+(?:-[0-9A-Za-z.]+)?"/', $contents, $m)) {
         return null;
     }
     return "{$m[1]}.{$m[2]}.x";
