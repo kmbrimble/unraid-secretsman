@@ -379,7 +379,7 @@ same way a real boot would. See `docs/phase2-resume.md` for the full incident.
 - **Phase 3 — Settings GUI (this repo, current state).** Prompted by a real incident: a
   hand-edited `store.json` with a missing comma and a trailing comma produced a completely
   blank Docker "Update Container" page with no visible error. Two shipped files:
-  `plugin/SecretsMan.page` (registered at Settings → User Utilities, `launch="Settings/SecretsMan"`
+  `plugin/SecretsMan.page` (registered as a top-bar tab, `Menu="Tasks:91"`, `launch="SecretsMan"`; before this it sat at Settings → User Utilities, `Settings/SecretsMan`
   — Unraid's `.page` loader globs `plugins/*/*.page` non-recursively, so the file must sit in
   the plugin's installed root, not a subdirectory) is a static shell with no store access at
   all; `plugin/scripts/store_api.php` is the only PHP that ever touches the store from the GUI,

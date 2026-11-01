@@ -55,7 +55,7 @@ removed — see SECURITY below for why.
 
 ## Managing secrets
 
-A Settings page (**Settings → User Utilities → SecretsMan**) handles the store without SSH:
+A **SecretsMan** tab in the top menu bar handles the store without SSH:
 add a secret, click **Copy token** on its row, and paste the exact `!secret ns/key` string into
 the template's Variable field in place of the value. A revealed value is never in the page
 source until you explicitly click Reveal on that one row; every other view only ever shows a
