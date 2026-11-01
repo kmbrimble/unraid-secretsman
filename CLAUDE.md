@@ -652,6 +652,19 @@ plugin's own `secretsman_store_set()` under an `flock` on `store.json.lock`, lea
 Host access from this repo's sessions: `ssh unraid` (used by `scripts/install-on-host.sh`) and
 `hl exec --endpoint unraid-api -- <cmd>` for the GraphQL API (`:81`). There is no `.env`.
 
+## Usage convention: login passwords for new installs (household policy, 2026-11-02)
+
+This is how the store is *used*, not something the plugin enforces. For any new container, plugin or app that needs a
+**login** password (a person types it: admin account, web UI, user accounts), create the app's **own** key in its own
+namespace (`<app>/admin_password`, or `<app>/<role>_password`) and set its **value by copying `All/default_user_password`**
+(Kieren's memorable default; the `All` namespace is the household-wide default, not an app). Do not generate a random one.
+The template references the per-app key (`!secret <app>/admin_password`), never `All/default_user_password` itself, so each
+app's password can be reset individually while staying memorable. Copy with `hl secret put`'s own path, never printing or
+argv: `hl exec --secret PW=All/default_user_password -- hl secret put <app>/admin_password --from-env PW` (`--replace` for an
+existing key); confirm by comparing hashes in-process, print only match/no-match. Random generation stays correct for
+**non-login** secrets: app secret keys, API tokens, DB passwords between containers, encryption keys. Worked example:
+`paperless/` in unraid-ops.
+
 ## Test command
 
 `php tests/run.php` — no framework, no fixtures beyond what's inline in the test file (plus
