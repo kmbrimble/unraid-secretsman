@@ -1,5 +1,7 @@
 # unraid-secretsman
 
+> Development happens on a private forge; this repository is a read-only mirror. Releases are published here.
+
 Central secret storage for Unraid Docker templates, so a secret typed into the Docker GUI
 doesn't end up in plaintext everywhere that template gets copied, pasted, or backed up.
 
