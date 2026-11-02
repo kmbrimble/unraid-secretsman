@@ -2,8 +2,7 @@
 # Assembles the installable plugin tree and packages it as a .txz + .md5,
 # for attaching to a GitHub Release (see CLAUDE.md "Shipping model").
 #
-# Run by .github/workflows/release.yml on every push to main that names an
-# untagged &version;, and available locally for a test build (needs xz, which
+# Run by Gitea CI (release-readiness) and by .github/workflows/release.yml on a mirrored v* tag, and available locally for a test build (needs xz, which
 # the claude-code container does not have). Building a package is not the same
 # as publishing it: this script only produces local files — it neither tags nor
 # publishes anything. See CLAUDE.md "Deploy and verify".
@@ -63,7 +62,10 @@ cp "$REPO_ROOT"/plugin/README.md "$PKG_DIR/"
 
 mkdir -p "$OUT_DIR"
 TXZ_PATH="$OUT_DIR/$NAME-$VERSION.txz"
-( cd "$BUILD_DIR" && tar -cJf "$TXZ_PATH" usr )
+# Deterministic archive: sorted names, fixed mtime, numeric owner. The same source must give the same bytes on the
+# Gitea runner and on the GitHub runner, because the .plg's &md5; is committed before the tag and the GitHub release
+# workflow rebuilds and requires it to match (scripts/check-md5.sh).
+( cd "$BUILD_DIR" && tar --sort=name --mtime='UTC 2020-01-01' --owner=0 --group=0 --numeric-owner -cJf "$TXZ_PATH" usr )
 
 MD5=$(md5sum "$TXZ_PATH" | awk '{print $1}')
 echo "$MD5" > "$OUT_DIR/$NAME.md5"
@@ -71,9 +73,7 @@ echo "$MD5" > "$OUT_DIR/$NAME.md5"
 echo "Built: $TXZ_PATH"
 echo "  md5: $MD5"
 echo
-echo "This is a local build. Releasing is automatic and does not use it:"
-echo "  bump &version; in unraid-secretsman.plg to the new version, write its ###<version>"
-echo "  CHANGES entry, and push to main. .github/workflows/release.yml builds, writes"
-echo "  the real &md5; back into the .plg, tags v<version> and publishes the release."
-echo "  Then run scripts/install-on-host.sh to put it on the Unraid host."
-echo "  See CLAUDE.md \"Deploy and verify\"."
+echo "This is a local build. A release is: bump &version; in unraid-secretsman.plg, write its ###<version>"
+echo "  CHANGES entry, set &md5; to the md5 above (CI tells you the value), merge the PR on Gitea, then tag"
+echo "  v<version> on Gitea. The tag is mirrored to GitHub and .github/workflows/release.yml publishes it."
+echo "  Then run scripts/install-on-host.sh to put it on the Unraid host. See CLAUDE.md \"Deploy and verify\"."

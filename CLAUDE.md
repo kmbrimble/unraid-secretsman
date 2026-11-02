@@ -51,7 +51,8 @@ real content) but still there. If you're reading this and it still exists, `rm -
    point" below for how the resolver avoids this structurally, not by scrubbing after the fact.
 7. **Any change to the patch layer (Phase 2+) requires the recovery drill in `RECOVERY.md` to
    be re-run and confirmed working before that change ships.**
-   Enforced at release time since 1.0.1: `.github/workflows/release.yml` fails the release if
+   Enforced at release time since 1.0.1 (now `scripts/release-gates.sh`, run by Gitea CI on the version-bump PR and again by
+   `.github/workflows/release.yml` on GitHub at the mirrored tag): the release fails if
    the patch layer changed since the previous tag and the new version's CHANGES entry does not
    record the outcome on a line starting `RECOVERY drill:`.
 
@@ -269,8 +270,8 @@ additive; narrowing it would be breaking** — so start narrow, widen only on a 
 Not going into Community Applications. Self-hosted `.plg` installed by URL from
 `raw.githubusercontent.com`, with a packaged `.txz` attached to a GitHub Release. `scripts/build-plugin.sh` assembles
 the installable tree (resolving the repo's `plugin/src` → `../src` symlink into real files — see
-"Repo layout" below); since 1.0.1 it is CI that runs it, on every push to `main` that names an
-untagged `&version;`, and CI that writes the resulting md5 back into the `.plg`. See "Deploy and
+"Repo layout" below); CI runs it (release-readiness on Gitea, then the GitHub release workflow at the mirrored tag).
+The archive is deterministic (sorted names, fixed mtime), so the md5 is the same on both runners. See "Deploy and
 verify" below.
 
 ### Repo layout note
@@ -301,7 +302,7 @@ when it is not. That is a plain string comparison. Two consequences, both hit he
   installed `2026.08.25`. Crossing that line needs Unraid's own `forced` argument, exactly once.
 - `1.0.10` is older than `1.0.9` to Unraid. Keep components single-digit, or zero-pad.
 
-Enforced, not remembered: `.github/workflows/release.yml` refuses to publish a version that does
+Enforced, not remembered: `scripts/release-gates.sh` (Gitea CI and the GitHub release workflow) refuses to publish a version that does
 not sort after the previous tag as a plain string, and `scripts/install-on-host.sh` compares the
 new version against the host's installed one before trying, naming `--forced` when crossing a
 boundary is actually what you want.
@@ -716,40 +717,47 @@ for `nice`/`ionice` as the fix — find and remove the actual CPU cost, the way 
 
 ## Deploy and verify
 
-**Releasing is automatic and needs nobody's say-so.** `.github/workflows/release.yml` watches
-`main`: when the `.plg`'s `&version;` entity names a version with no tag yet, it runs the Rule 7
-gate below, lints, runs the suite, runs `scripts/build-plugin.sh`, writes the built package's
-real md5 back into the `.plg`, commits that, tags `v<version>`, and publishes the GitHub Release
-with the `.txz` and `.md5` attached. Every other push is a no-op, the workflow's own md5 commit
-included — the tag check runs before anything else.
+**Forge (changed 2 Nov 2026): Gitea is primary, GitHub is a read-only push mirror.** Develop against
+`https://git.kiztigs.com/kmbrimble/unraid-secretsman` (`origin`, gt credential helper; `gt`, not `gh`, for issues/PRs).
+`github.com/kmbrimble/unraid-secretsman` receives every push to Gitea within about a minute (`sync_on_commit`, plus an
+8-hourly sweep) and **must never be pushed to directly**: the mirror force-syncs and prunes refs, so anything that exists only
+on GitHub is lost. GitHub has Issues, Wiki, Projects, Discussions and PRs switched off. The `.plg` URLs
+(`raw.githubusercontent.com/.../main/unraid-secretsman.plg` and the release assets) deliberately still point at GitHub.
+`main` is protected on Gitea: changes go through a PR, both CI checks (`CI / php84 (pull_request)`, `CI / php81 (pull_request)`)
+must be green, and butler-bot merges its own green PRs (no human approval).
 
-A release is therefore: **bump `&version;`, write the `###<version>` CHANGES entry, push.** Three
-things stay by hand, deliberately:
+**Releasing needs nobody's say-so, but it is two steps now.** Nothing writes back to the repo after the tag any more (a push
+mirror would discard it), so the md5 goes in *before* tagging:
 
-- **The CHANGES entry.** The workflow refuses to publish a version with no `###<version>` block
-  and uses that block verbatim as the release notes. A changelog is content, not mechanics;
-  generated from commit subjects it would be worthless.
-- **`&md5;` is not yours to compute.** Leave whatever is in the file. CI overwrites it with the
-  checksum of the package it just built, and asserts the two match before committing. This
-  plugin checks that md5 twice — once in the plugin manager, once in the `.plg`'s own install
-  script, which deletes the download and aborts on a mismatch — so a hand-typed value was the
-  step most likely to break an install outright.
-- **Rule 7, the recovery drill.** It needs a real host and cannot run on a GitHub runner. What
-  the workflow *can* do, and does, is refuse to publish: if `src/patch.php`,
-  `plugin/scripts/apply_patch.php` or `plugin/scripts/uninstall.php` changed since the previous
-  tag, the new version's CHANGES entry must contain a line starting `RECOVERY drill:` recording
-  the outcome, or the release fails. Automating the release did not delete rule 7; it turned it
-  from a habit into a gate.
+1. In the PR that bumps `&version;` write the `###<version>` CHANGES entry and set `&md5;`. CI's release-readiness step
+   (any untagged `&version;`) runs `scripts/release-gates.sh` (CHANGES entry, Rule 7, strcmp ordering) and then builds the
+   package, failing with `set &md5; to <value>`; push again with that value. Merge.
+2. Tag the merge commit on Gitea: `git tag v<version> && git push origin v<version>`. The tag is mirrored and
+   `.github/workflows/release.yml` on GitHub reruns the gates, rebuilds, requires the same md5, and publishes the Release
+   with the `.txz` and `.md5` attached. See the `forge-release` skill. That workflow can also be dispatched by hand on
+   GitHub as a dry run.
+
+Three things stay by hand, deliberately:
+
+- **The CHANGES entry.** The gates refuse a version with no `###<version>` block, and its text is used verbatim as the
+  release notes. A changelog is content, not mechanics.
+- **`&md5;` comes from CI's build, not from your head.** This plugin checks that md5 twice — once in the plugin manager,
+  once in the `.plg`'s own install script, which deletes the download and aborts on a mismatch — so a hand-typed value would
+  break an install outright. Take the value CI prints for the exact commit you are releasing.
+- **Rule 7, the recovery drill.** It needs a real host and cannot run on a runner. What the gates *can* do, and do, is refuse
+  to release: if `src/patch.php`, `plugin/scripts/apply_patch.php` or `plugin/scripts/uninstall.php` changed since the previous
+  tag, the new version's CHANGES entry must contain a line starting `RECOVERY drill:` recording the outcome.
+
+The first real release on this layout is the final proof of the tag path; it had not happened when this section was written.
 
 `dist/` is still gitignored — artifacts are release assets, not repo contents.
 `scripts/build-plugin.sh` still runs locally for a test build, but needs `xz`, which the
-claude-code container does not have and the runner does.
+claude-code container does not have and the runners do.
 
-CI (`.github/workflows/ci.yml`) is unchanged and still runs `php -l` and `php tests/run.php` on
-PHP 8.1 and 8.4 on every push. The release workflow repeats those checks rather than trusting a
-sibling workflow's result it cannot see.
+Gitea CI (`.gitea/workflows/ci.yml`) runs `php -l` and `php tests/run.php` on PHP 8.4 and 8.1 on every push and PR. The GitHub
+release workflow repeats those checks rather than trusting a result it cannot see.
 
-**Installing on the host is the one step CI cannot do** — GitHub's runners have no route to
+**Installing on the host is the one step CI cannot do** — GitHub's runners (and the Gitea runner VM) have no route to
 192.168.0.10. `scripts/install-on-host.sh` does it from the claude-code container, and running it
 is part of releasing, not a separate decision: it confirms the release exists, waits until the
 raw `.plg`'s own `&version;` *and* `&md5;` match the published release (raw.githubusercontent.com

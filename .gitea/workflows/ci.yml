@@ -1,0 +1,59 @@
+name: CI
+
+# Gitea is the primary forge (GitHub is a read-only push mirror). The two jobs below are the required status
+# checks on main ("CI / php84 (pull_request)" and "CI / php81 (pull_request)"). They are separate jobs rather
+# than a matrix so the check names are fixed and predictable.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  php84:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          fetch-depth: 0   # tags are needed by the release-readiness step
+
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # v2
+        with:
+          php-version: '8.4'
+          extensions: simplexml
+
+      - name: Lint
+        run: find src plugin tests -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Test
+        run: php tests/run.php
+
+      # A version that is not tagged yet is a release in the making: it must pass the release gates (CHANGES entry,
+      # rule 7 recovery-drill note, strcmp ordering), its .plg must already carry the final md5 (nothing writes it
+      # back after the tag any more), and the build must be reproducible.
+      - name: Release readiness (untagged version must pass the gates and carry the final md5)
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -rn 's|^<!ENTITY version[[:space:]]+"([^"]+)">.*|\1|p' unraid-secretsman.plg)
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "v$VERSION is already tagged: nothing to enforce; reporting this build's md5 for comparison with the GitHub dry run."
+            bash scripts/check-md5.sh "$VERSION" --report-only
+          else
+            bash scripts/release-gates.sh "$VERSION"
+            bash scripts/check-md5.sh "$VERSION"
+          fi
+
+  php81:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # v2
+        with:
+          php-version: '8.1'
+          extensions: simplexml
+
+      - name: Lint
+        run: find src plugin tests -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Test
+        run: php tests/run.php
