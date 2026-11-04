@@ -1052,6 +1052,31 @@ t('plg: the packaged .txz extracts to the real absolute install path, not a bare
     @unlink(__DIR__ . '/../dist/unraid-secretsman.md5');
 });
 
+t('plg: the .txz build is byte-reproducible across umask, TZ and xz threading defaults', function () {
+    // The .plg's &md5; is committed before the tag and the GitHub release workflow rebuilds and requires it to
+    // match, so the build must not depend on the machine. It did: xz >= 5.6 compresses multi-threaded by default,
+    // which writes sizes into the block header, so the container (xz 5.8) built 4285115b... where Gitea CI built
+    // 960487e7... from a byte-identical tar stream. Each variant perturbs something a runner can differ in.
+    $root = __DIR__ . '/..';
+    $variants = [
+        'plain' => '',
+        'umask' => 'umask 077; TZ=Asia/Tokyo ',
+        'xz-mt' => 'umask 002; XZ_DEFAULTS=-T0 ',
+        'xz-st' => 'XZ_DEFAULTS=-T1 ',
+    ];
+    $md5s = [];
+    foreach ($variants as $tag => $prefix) {
+        $v = "repro-$tag";
+        $cmd = $prefix . 'bash ' . escapeshellarg("$root/scripts/build-plugin.sh") . ' ' . $v;
+        exec('bash -c ' . escapeshellarg($cmd) . ' 2>&1', $out, $code);
+        assert_eq(0, $code, "build ($tag) must succeed: " . implode("\n", $out));
+        $md5s[$tag] = md5_file("$root/dist/unraid-secretsman-$v.txz");
+        @unlink("$root/dist/unraid-secretsman-$v.txz");
+    }
+    @unlink("$root/dist/unraid-secretsman.md5");
+    assert_eq(1, count(array_unique($md5s)), 'builds differ: ' . json_encode($md5s));
+});
+
 // ---------------------------------------------------------------------------
 // Plugin scripts (plugin/scripts/) — Phase 2
 // ---------------------------------------------------------------------------

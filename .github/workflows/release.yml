@@ -69,8 +69,9 @@ jobs:
         if: env.DRY_RUN == 'true'
         run: bash scripts/check-md5.sh "$VERSION" --report-only
 
-      # The .plg's &md5; is checked twice on this plugin, by the Unraid plugin manager and again by the .plg's own
-      # install script, which deletes the download and aborts on a mismatch.
+      # On the host, the Unraid plugin manager verifies the downloaded .txz against the .plg's &md5; (and re-fetches
+      # on a mismatch); the .plg's own install script deliberately does not re-check it (CLAUDE.md constraint 9). So
+      # this rebuild is what guarantees the published asset matches the committed &md5;.
       - name: Rebuild and require the committed md5 to match
         if: env.DRY_RUN != 'true'
         run: bash scripts/check-md5.sh "$VERSION"

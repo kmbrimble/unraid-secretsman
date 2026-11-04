@@ -2,8 +2,8 @@
 # Assembles the installable plugin tree and packages it as a .txz + .md5,
 # for attaching to a GitHub Release (see CLAUDE.md "Shipping model").
 #
-# Run by Gitea CI (release-readiness) and by .github/workflows/release.yml on a mirrored v* tag, and available locally for a test build (needs xz, which
-# the claude-code container does not have). Building a package is not the same
+# Run by Gitea CI (release-readiness) and by .github/workflows/release.yml on a mirrored v* tag, and available
+# locally for a test build (needs GNU tar and xz); a local build gives the same md5 as CI. Building a package is not the same
 # as publishing it: this script only produces local files — it neither tags nor
 # publishes anything. See CLAUDE.md "Deploy and verify".
 #
@@ -62,10 +62,16 @@ cp "$REPO_ROOT"/plugin/README.md "$PKG_DIR/"
 
 mkdir -p "$OUT_DIR"
 TXZ_PATH="$OUT_DIR/$NAME-$VERSION.txz"
-# Deterministic archive: sorted names, fixed mtime, numeric owner. The same source must give the same bytes on the
-# Gitea runner and on the GitHub runner, because the .plg's &md5; is committed before the tag and the GitHub release
-# workflow rebuilds and requires it to match (scripts/check-md5.sh).
-( cd "$BUILD_DIR" && tar --sort=name --mtime='UTC 2020-01-01' --owner=0 --group=0 --numeric-owner -cJf "$TXZ_PATH" usr )
+# Deterministic archive: the same source must give the same bytes on any machine, because the .plg's &md5; is
+# committed before the tag and the GitHub release workflow rebuilds and requires it to match (scripts/check-md5.sh).
+# - sorted names, fixed mtime, numeric root owner;
+# - --mode: cp/mkdir/git checkout all inherit the caller's umask, so normalise to 0644 files / 0755 dirs;
+# - xz -T1 on the command line: xz >= 5.6 defaults to multi-threaded, which writes sizes into the block header and
+#   changes the bytes (identical tar stream, different .txz). Command-line flags beat XZ_OPT/XZ_DEFAULTS.
+# tests/run.php builds under different umask/TZ/XZ_DEFAULTS and requires identical md5s.
+echo "  $(tar --version | head -1); $(xz --version | head -1)" >&2  # stderr: check-md5.sh discards stdout
+( cd "$BUILD_DIR" && tar --sort=name --mtime='UTC 2020-01-01' --owner=0 --group=0 --numeric-owner \
+    --mode='u=rwX,go=rX' -I 'xz -6 -T1' -cf "$TXZ_PATH" usr )
 
 MD5=$(md5sum "$TXZ_PATH" | awk '{print $1}')
 echo "$MD5" > "$OUT_DIR/$NAME.md5"
