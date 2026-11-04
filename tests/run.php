@@ -1019,6 +1019,115 @@ t('plg: the remove block checks uninstall.php with -f, not -x', function () {
     );
 });
 
+/**
+ * Runs the .plg's real install INLINE under bash against a temp flash dir, the way the plugin manager does:
+ * &plgPATH;/&emhttp; (and optionally &version;) are rewritten in the DOCTYPE, libxml expands the entities, and
+ * upgradepkg/php/update_cron are recording stubs on PATH. $files are names to create in the flash dir (a trailing
+ * '/' makes a directory). Returns [exit code, sorted remaining flash entries, stub call log].
+ */
+function run_install_inline(array $files, ?string $version = null, int $upgradepkgRc = 0): array
+{
+    $tmp = scratch_dir();
+    $plg = file_get_contents(__DIR__ . '/../unraid-secretsman.plg');
+    $plg = preg_replace('|<!ENTITY plgPATH\s+"[^"]*">|', "<!ENTITY plgPATH \"$tmp/flash\">", $plg, 1, $n1);
+    $plg = preg_replace('|<!ENTITY emhttp\s+"[^"]*">|', "<!ENTITY emhttp \"$tmp/emhttp\">", $plg, 1, $n2);
+    assert_eq([1, 1], [$n1, $n2], 'plgPATH and emhttp entities must exist to be redirected');
+    if ($version !== null) {
+        $plg = preg_replace('|<!ENTITY version\s+"[^"]*">|', "<!ENTITY version \"$version\">", $plg, 1);
+    }
+    $xml = simplexml_load_string($plg, 'SimpleXMLElement', LIBXML_NOENT);
+    $inline = null;
+    foreach ($xml->FILE as $file) {
+        if ((string)$file['Run'] === '/bin/bash' && !isset($file['Method'])) {
+            $inline = (string)$file->INLINE;
+        }
+    }
+    assert_true($inline !== null, 'install INLINE not found');
+    file_put_contents("$tmp/install.sh", $inline);
+
+    mkdir("$tmp/flash");
+    mkdir("$tmp/bin");
+    foreach ($files as $f) {
+        str_ends_with($f, '/') ? mkdir("$tmp/flash/$f") : file_put_contents("$tmp/flash/$f", 'x');
+    }
+    foreach (['upgradepkg' => '${UPGRADEPKG_RC:-0}', 'php' => '0', 'update_cron' => '0'] as $stub => $rc) {
+        file_put_contents("$tmp/bin/$stub", "#!/bin/bash\necho \"$stub \$*\" >> \"\$STUB_LOG\"\nexit $rc\n");
+        chmod("$tmp/bin/$stub", 0755);
+    }
+    $env = 'PATH=' . escapeshellarg("$tmp/bin:" . getenv('PATH')) . ' STUB_LOG=' . escapeshellarg("$tmp/log")
+        . " UPGRADEPKG_RC=$upgradepkgRc";
+    exec("env $env bash " . escapeshellarg("$tmp/install.sh") . ' 2>&1', $out, $code);
+    $left = [];
+    foreach (array_diff(scandir("$tmp/flash"), ['.', '..']) as $e) {
+        $left[] = is_dir("$tmp/flash/$e") ? "$e/" : $e;
+    }
+    sort($left);
+    $log = is_file("$tmp/log") ? file_get_contents("$tmp/log") : '';
+    exec('rm -rf ' . escapeshellarg($tmp));
+    return [$code, $left, $log . implode("\n", $out)];
+}
+
+// Files the install block must never touch (names as found on the live host's flash dir, plus store/backups).
+const PRUNE_SURVIVORS = [
+    'SecretsMan.page.orig-preview-backup', 'backup-config.json', 'backup-config.json.bak-backupmove-20261024-201856',
+    'secretsman-backup-20261101.7z', 'secretsman-backup-20261101.tar.enc.hmac', 'store.json', 'unraid-secretsman.cron',
+];
+
+function plg_version(): string
+{
+    preg_match('|<!ENTITY version\s+"([^"]+)">|', file_get_contents(__DIR__ . '/../unraid-secretsman.plg'), $m);
+    return $m[1];
+}
+
+function sorted(array $a): array
+{
+    sort($a);
+    return $a;
+}
+
+t('plg install: old versioned .txz packages are deleted after upgradepkg, current one kept', function () {
+    $cur = 'unraid-secretsman-' . plg_version() . '.txz';
+    $old = ['unraid-secretsman-2026.08.25.txz', 'unraid-secretsman-1.0.2.txz', 'unraid-secretsman-1.0.3.txz',
+        'unraid-secretsman-0.9.9.txz'];
+    [$code, $left, $log] = run_install_inline(array_merge(PRUNE_SURVIVORS, $old, [$cur]));
+    assert_eq(0, $code, $log);
+    assert_true(str_contains($log, "upgradepkg --install-new"), 'upgradepkg must have run: ' . $log);
+    assert_eq(sorted(array_merge(PRUNE_SURVIVORS, [$cur])), $left);
+});
+
+t('plg install: only the current .txz present leaves the flash dir unchanged', function () {
+    $cur = 'unraid-secretsman-' . plg_version() . '.txz';
+    [$code, $left, $log] = run_install_inline(array_merge(PRUNE_SURVIVORS, [$cur]));
+    assert_eq(0, $code, $log);
+    assert_eq(sorted(array_merge(PRUNE_SURVIVORS, [$cur])), $left);
+});
+
+t('plg install: no .txz at all (glob matches nothing) succeeds and deletes nothing', function () {
+    [$code, $left, $log] = run_install_inline(PRUNE_SURVIVORS);
+    assert_eq(0, $code, $log);
+    assert_eq(sorted(PRUNE_SURVIVORS), $left);
+});
+
+t('plg install: odd version shapes - prefix-like current version, rc, spaces, non-file and non-digit names', function () {
+    // Current version is an rc whose prefix is itself a valid older version: only the exact quoted name survives.
+    $cur = 'unraid-secretsman-1.0.6-rc.1.txz';
+    $deleted = ['unraid-secretsman-1.0.6.txz', 'unraid-secretsman-1.0.6-rc.1.txz.txz', 'unraid-secretsman-1.0.5 copy.txz',
+        'unraid-secretsman-1.txz'];
+    $kept = ['unraid-secretsman-9.9.9.txz/', 'unraid-secretsman-backup.txz', 'unraid-secretsman-1.0.4.txz.bak',
+        'other-plugin-1.0.0.txz', 'unraid-secretsman-1.0.4.TXZ'];
+    [$code, $left, $log] = run_install_inline(array_merge(PRUNE_SURVIVORS, $deleted, $kept, [$cur]), '1.0.6-rc.1');
+    assert_eq(0, $code, $log);
+    assert_eq(sorted(array_merge(PRUNE_SURVIVORS, $kept, [$cur])), $left);
+});
+
+t('plg install: a failed upgradepkg aborts before any .txz is deleted', function () {
+    $cur = 'unraid-secretsman-' . plg_version() . '.txz';
+    $all = array_merge(PRUNE_SURVIVORS, ['unraid-secretsman-1.0.2.txz', $cur]);
+    [$code, $left, $log] = run_install_inline($all, null, 1);
+    assert_true($code !== 0, 'install must fail when upgradepkg fails: ' . $log);
+    assert_eq(sorted($all), $left);
+});
+
 t('plg: the packaged .txz extracts to the real absolute install path, not a bare package-name root', function () {
     // Caught live during Gate 2: scripts/build-plugin.sh archived the tree
     // rooted at "unraid-secretsman/...". Slackware's upgradepkg/installpkg
