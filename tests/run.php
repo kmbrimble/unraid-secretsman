@@ -27,6 +27,7 @@ require __DIR__ . '/../plugin/scripts/backup_cron_register.php';
 
 $failures = [];
 $passed   = 0;
+$skipped  = [];
 
 function t(string $name, callable $fn): void
 {
@@ -37,6 +38,34 @@ function t(string $name, callable $fn): void
     } catch (\Throwable $e) {
         $failures[] = sprintf("%s\n    %s: %s", $name, get_class($e), $e->getMessage());
     }
+}
+
+// A test that cannot run here is reported, never silently dropped: two 7z tests used to vanish from the count on any
+// machine without 7z, which is why CI and local runs disagreed by 2 with nothing saying why.
+function skip(string $name, string $why): void
+{
+    global $skipped;
+    $skipped[] = "$name ($why)";
+}
+
+// Summary line and overall pass/fail. Under CI a skip is a failure: the Gitea runner has 7z (CI ran the 7z tests)
+// and so should GitHub's ubuntu image, so a skip there means coverage was lost, not an optional tool missing.
+// If release.yml's runner lacks 7z this fails loudly; install p7zip there rather than relax this.
+// CI, GITHUB_ACTIONS (GitHub, and Gitea's act_runner) or GITEA_ACTIONS: any one is enough, so the check does not
+// hinge on which variables a given runner version exports.
+function running_in_ci(): bool
+{
+    foreach (['CI', 'GITHUB_ACTIONS', 'GITEA_ACTIONS'] as $v) {
+        if (getenv($v) === 'true') return true;
+    }
+    return false;
+}
+
+function runner_summary(int $passed, int $failed, int $skipped, bool $ci): array
+{
+    $line = sprintf('%d passed, %d failed, %d skipped', $passed, $failed, $skipped);
+    $skipFails = $ci && $skipped > 0;
+    return [$skipFails ? "$line (skips fail the run under CI)" : $line, $failed === 0 && !$skipFails];
 }
 
 function assert_true($cond, string $msg = 'expected true'): void
@@ -1590,36 +1619,35 @@ t('never-log: a wrong-password error and a merge collision report never contain 
     assert_true(strpos(json_encode($outcome), $sentinel) === false, 'sentinel leaked into restore outcome');
 });
 
-// 7z-specific coverage — only registered if a usable binary is actually
-// present locally (it isn't stock Unraid; see src/backup.php's header
-// comment), so this never fails on a host/CI without one.
-if (secretsman_backup_7z_bin() !== null) {
-    t('backup: create() then verify() round-trips via 7z, headers genuinely encrypted', function () {
-        $dir = scratch_dir();
-        $storePath = write_store($dir, ['ns' => ['k' => 'test-value-not-a-real-secret']]);
-        $result = secretsman_backup_create($storePath, 'hunter2', $dir . '/dest', 'sevenzip');
-        assert_eq('sevenzip', $result['tool']);
-        assert_eq('sevenzip', secretsman_backup_detect_format($result['path']));
-        $decoded = secretsman_backup_verify($result['path'], 'hunter2');
-        assert_eq(['ns' => ['k' => 'test-value-not-a-real-secret']], $decoded);
-        // Caught live: macOS's built-in Archive Utility refuses a 7z archive
-        // with AES-256 encryption and reports it as damaged — indistinguishable,
-        // to someone who doesn't already know this, from a wrong password at
-        // exactly the worst possible moment (trying to recover from a lost
-        // store). The readme has to say so explicitly, not just name working
-        // tools and let the reader assume any of them would do.
-        $readmeContent = file_get_contents($result['readme']);
-        assert_true(str_contains($readmeContent, 'Archive Utility'), 'readme should warn macOS Archive Utility does not work');
-        assert_true(str_contains($readmeContent, 'Unarchiver') || str_contains($readmeContent, 'Keka'), 'readme should name a working alternative');
-    });
+// 7z-specific coverage — only run if a usable binary is actually present
+// (it isn't stock Unraid; see src/backup.php's header comment). Without one
+// each test prints a skip line instead, and under CI that fails the run.
+$t7z = secretsman_backup_7z_bin() !== null ? 't' : fn(string $name, callable $fn) => skip($name, '7z not installed');
+$t7z('backup: create() then verify() round-trips via 7z, headers genuinely encrypted', function () {
+    $dir = scratch_dir();
+    $storePath = write_store($dir, ['ns' => ['k' => 'test-value-not-a-real-secret']]);
+    $result = secretsman_backup_create($storePath, 'hunter2', $dir . '/dest', 'sevenzip');
+    assert_eq('sevenzip', $result['tool']);
+    assert_eq('sevenzip', secretsman_backup_detect_format($result['path']));
+    $decoded = secretsman_backup_verify($result['path'], 'hunter2');
+    assert_eq(['ns' => ['k' => 'test-value-not-a-real-secret']], $decoded);
+    // Caught live: macOS's built-in Archive Utility refuses a 7z archive
+    // with AES-256 encryption and reports it as damaged — indistinguishable,
+    // to someone who doesn't already know this, from a wrong password at
+    // exactly the worst possible moment (trying to recover from a lost
+    // store). The readme has to say so explicitly, not just name working
+    // tools and let the reader assume any of them would do.
+    $readmeContent = file_get_contents($result['readme']);
+    assert_true(str_contains($readmeContent, 'Archive Utility'), 'readme should warn macOS Archive Utility does not work');
+    assert_true(str_contains($readmeContent, 'Unarchiver') || str_contains($readmeContent, 'Keka'), 'readme should name a working alternative');
+});
 
-    t('backup: an archive made without 7z restores fine even when 7z happens to be present, and vice versa is format-driven not host-driven', function () {
-        $dir = scratch_dir();
-        $storePath = write_store($dir, ['ns' => ['k' => 'v']]);
-        $opensslResult = secretsman_backup_create($storePath, 'hunter2', $dir . '/dest', 'openssl');
-        assert_eq('openssl', secretsman_backup_detect_format($opensslResult['path']), 'format must come from the file, not from 7z being available here');
-    });
-}
+$t7z('backup: an archive made without 7z restores fine even when 7z happens to be present, and vice versa is format-driven not host-driven', function () {
+    $dir = scratch_dir();
+    $storePath = write_store($dir, ['ns' => ['k' => 'v']]);
+    $opensslResult = secretsman_backup_create($storePath, 'hunter2', $dir . '/dest', 'openssl');
+    assert_eq('openssl', secretsman_backup_detect_format($opensslResult['path']), 'format must come from the file, not from 7z being available here');
+});
 
 // ---------------------------------------------------------------------------
 // Web dispatchers (store_api.php / backup_api.php) — the actual code paths
@@ -1727,10 +1755,22 @@ t('web: backup_api.php reports oversized-and-silently-emptied POST bodies clearl
     assert_true(str_contains($resp['error'], 'too large'));
 });
 
+t('runner: the summary counts skips, and a skip fails the run only under CI', function () {
+    assert_eq(['3 passed, 0 failed, 0 skipped', true], runner_summary(3, 0, 0, false));
+    assert_eq(['3 passed, 0 failed, 0 skipped', true], runner_summary(3, 0, 0, true));
+    assert_eq(['3 passed, 0 failed, 2 skipped', true], runner_summary(3, 0, 2, false));
+    assert_eq(['3 passed, 0 failed, 2 skipped (skips fail the run under CI)', false], runner_summary(3, 0, 2, true));
+    assert_eq(['3 passed, 1 failed, 0 skipped', false], runner_summary(3, 1, 0, false));
+});
+
 // ---------------------------------------------------------------------------
 
 foreach ($failures as $f) {
     fwrite(STDERR, "FAIL: $f\n");
 }
-printf("%d passed, %d failed\n", $passed, count($failures));
-exit(count($failures) === 0 ? 0 : 1);
+foreach ($skipped as $s) {
+    echo "skipped: $s\n";
+}
+[$summary, $ok] = runner_summary($passed, count($failures), count($skipped), running_in_ci());
+echo "$summary\n";
+exit($ok ? 0 : 1);
