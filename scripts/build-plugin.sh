@@ -31,7 +31,7 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 
 echo "Building $NAME-$VERSION.txz ..."
 
-mkdir -p "$PKG_DIR"/{src,scripts,reference}
+mkdir -p "$PKG_DIR"/{src,scripts,reference,app}
 
 # Resolve the repo's src/ <-> plugin/src symlink into real files in the
 # package — a .txz has no business shipping symlinks that only make sense
@@ -39,6 +39,22 @@ mkdir -p "$PKG_DIR"/{src,scripts,reference}
 cp "$REPO_ROOT"/src/*.php "$PKG_DIR/src/"
 cp "$REPO_ROOT"/plugin/scripts/*.php "$PKG_DIR/scripts/"
 cp -r "$REPO_ROOT"/reference/. "$PKG_DIR/reference/"
+
+# The web app (ui/, Preact + Vite): index.php is the PHP shell, assets/ is the built JS and CSS. The build is
+# reproducible (fixed output names, no sourcemaps, lockfile-pinned) so the archive md5 matches across runners.
+# SECRETSMAN_UI_DIST points at a prebuilt dist (tests/run.php builds the UI once and reuses it); unset, this builds.
+UI_DIST="${SECRETSMAN_UI_DIST:-}"
+if [ -z "$UI_DIST" ]; then
+  echo "  building ui/ ($(node --version), npm $(npm --version))" >&2
+  ( cd "$REPO_ROOT/ui" && npm ci --no-audit --no-fund --loglevel=error && npm run build ) >&2
+  UI_DIST="$REPO_ROOT/ui/dist"
+fi
+if [ ! -f "$UI_DIST/assets/app.js" ] || [ ! -f "$UI_DIST/assets/app.css" ]; then
+  echo "build-plugin.sh: $UI_DIST/assets/app.js or app.css is missing: the UI did not build" >&2
+  exit 1
+fi
+cp "$REPO_ROOT"/plugin/app/index.php "$PKG_DIR/app/"
+cp -r "$UI_DIST/assets" "$PKG_DIR/app/assets"
 
 # .page files must sit in the plugin's installed ROOT — Unraid's page loader
 # (build_pages('plugins/*/*.page')) globs non-recursively, so anything under

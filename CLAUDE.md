@@ -88,6 +88,8 @@ recurring. (The stray `~/projects` skeleton this note used to describe is gone, 
    reaching this host; the host sat on 2026.08.25 for two releases while `gh release list` said
    otherwise. Removed in 1.0.2, which also deletes the orphaned sidecar. `docker.netman` hit the
    identical bug and removed it in its 0.2.0 — see that repo's CLAUDE.md "Plugin manager quirk".
+10. UI follows DESIGN.md. No colour, spacing, radius or shadow values outside the vendored
+    `ui/src/styles/tokens.css`; changes go upstream to kmbrimble/design-system and are re-vendored.
 
 
 ## Patch target and insertion point (Phase 0 recon, 2026-08-24, read-only against the live host)
@@ -238,14 +240,26 @@ mode-agnostic. Removing `!secretfile` changed zero bytes of it.
   to `-f` and regression-tested. **Re-run this drill after any change to `uninstall.php`, the `.plg`'s remove
   block, or `secretsman_patch_revert()`.**
 
-**Settings GUI (Phase 3):** it exists because a hand-edited `store.json` with a missing comma produced a blank Docker
-"Update Container" page with no visible error.
-- `plugin/SecretsMan.page` is a top-bar tab (`Menu="Tasks:91"`, `launch="SecretsMan"`; it used to be under
-  Settings → User Utilities). It is a static shell with no store access at all, and must sit in the plugin's
-  installed root.
-- `plugin/scripts/store_api.php` is the only PHP that touches the store from the GUI, and the only HTML renderer for
-  it. The page ships an empty table and calls `action=list` on load, so the initial paint and every post-mutation
-  repaint share one render path.
+**Settings GUI (Phase 3, rebuilt as a web app in 1.1.0):** it exists because a hand-edited `store.json` with a missing
+comma produced a blank Docker "Update Container" page with no visible error.
+- `plugin/SecretsMan.page` is a top-bar tab (`Menu="Tasks:91"`, `launch="SecretsMan"`) and, since 1.1.0, only a thin
+  iframe host plus an "Open full page" link. It has no store access and no markup of its own, and must sit in the
+  plugin's installed root. The iframe is sized by JS to the viewport below the header (the app scrolls inside it).
+- The UI is a static Preact + Vite + TypeScript app in `ui/`. `scripts/build-plugin.sh` runs `npm ci && npm run build`
+  and packages `ui/dist/assets/` plus `plugin/app/index.php` into `app/`. Output names are fixed (`assets/app.js`,
+  `assets/app.css`) with no sourcemaps, so the archive stays byte-reproducible; CI pins Node (`22.23.4`) and
+  `npm ci` pins the packages. `SECRETSMAN_UI_DIST` points the script at a prebuilt dist (the test suite uses it).
+- `plugin/app/index.php` is the shell: it emits only `csrf_token` from `var.ini` (as `data-csrf`, escaped, `no-store`),
+  derives `data-theme` from the Unraid theme (black/gray dark, white/azure light, per `ThemeHelper.php`) and loads the
+  content-versioned assets. All app requests are urlencoded POSTs carrying the token as a field and as
+  `X-CSRF-Token` (never multipart). The app path stays lowercase: an uppercase first letter routes to `template.php`.
+- UI follows DESIGN.md (house design system, vendored in `ui/src/styles/`). No colour, spacing, radius or shadow
+  values outside the vendored `tokens.css`; changes go upstream to kmbrimble/design-system and are re-vendored.
+  `npm run check:contrast` in `ui/` runs the contrast check against the vendored tokens.
+- `plugin/scripts/store_api.php` and `backup_api.php` render no HTML any more: `list` and every mutation return one JSON
+  payload (namespaces, keys with value LENGTH and `usedBy`, orphans, problems; backup config, `passwordSet`,
+  archives, `lastRun`). Ordering is natural and case-insensitive (`secretsman_sort_store()`); a plain `ksort()`
+  put every capital first. Only `reveal` ever returns a value, for one named key.
 - The GUI functions in `src/secretsman.php` (`secretsman_default_store_path`, `secretsman_check_name`,
   `secretsman_save_store`, `secretsman_store_set`, `secretsman_store_delete`, `secretsman_scan_templates`) reuse the
   existing validators as the single source of truth. `secretsman_check_name()` round-trips through
@@ -562,7 +576,7 @@ host; check `/boot/config/plugins/unraid-secretsman.plg`. The live store is `/mn
 
 For `code-diff-reviewer` / `code-audit` / `code-security-audit`. Verified live 2026-09-04.
 
-**Exposure: LAN-only, behind the Unraid webGUI login.** `SecretsMan.page` and everything under
+**Exposure: LAN-only, behind the Unraid webGUI login.** `SecretsMan.page`, `app/` and everything under
 `plugin/scripts/` is served by the host's own nginx, which binds `192.168.0.10:81`,
 `192.168.66.10:81` and loopback only (`USE_SSL="no"` in `/boot/config/ident.cfg`, so :443 is
 loopback-only). There is no tunnel route, no reverse-proxy route and no port forward reaching
@@ -636,15 +650,14 @@ tmpfs materialisation, `secretsman_resolve()`), `src/patch.php` (apply/revert/ve
 
 Thin or absent:
 
-- **The web dispatchers are barely covered.** Seven `web:` tests exist, run as real subprocesses
-  via `run_web_script()`. They cover `store_api.php` (non-POST reject, `list`, unknown action)
-  and `backup_api.php` (`list`, the `restore` traversal attempt, invalid base64, oversized POST).
-  **`store_api.php`'s `add`, `edit`, `delete` and `reveal` — every write action and the one that
-  returns a plaintext secret — have no dispatcher-level test**, and neither do `backup_api.php`'s
-  `config_set` and `backup_now`. The underlying `src/` functions are tested; the dispatch,
-  argument handling and error paths around them are not.
-- **`plugin/scripts/backup_download.php` has zero test references.**
-- **`plugin/SecretsMan.page` (431 lines) has no harness at all.**
+- **Web dispatchers (since 1.1.0):** `web:` subprocess tests cover `store_api.php` (non-POST, unknown action,
+  `list` JSON shape and ordering, corrupt store, `add`/`edit`/`reveal`/`delete`, name validation, no value in any
+  non-reveal response), `backup_api.php` (`list` shape, `config_set`, `backup_now` failure, restore traversal,
+  invalid base64, oversized POST), `backup_download.php`, and `app/index.php` (token, theme, escaping). Still not
+  covered at dispatcher level: a successful `backup_now` and a successful `restore` through `backup_api.php`.
+- **The browser UI has Vitest unit tests (`ui/src/lib.test.ts`: validation, transport, error mapping) and no
+  component tests.** The click-through (add, copy, reveal, edit, delete) is a headless-Chromium script run by hand
+  against the live host, not in CI.
 - **The suite cannot catch a php-fpm-only defect** — it runs exclusively under CLI, where
   `STDOUT`/`STDERR`/`$argv` are all defined. This is rule 8, and it has already bitten three
   times.

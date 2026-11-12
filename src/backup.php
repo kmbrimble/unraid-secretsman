@@ -615,3 +615,40 @@ function secretsman_backup_upload_limit_bytes(): int
     $usable = max(0, $capBytes - 65536);
     return (int) floor($usable / 1.34);
 }
+
+/**
+ * List the subdirectories of $dir for the destination folder picker. Confined to $roots (default /mnt and /boot,
+ * set by the dispatcher): the path is resolved with realpath() first, so ".." and symlinks cannot escape, and it
+ * must be a root or inside one. Directories only, dot-directories hidden, capped at 500. Returns the resolved
+ * path, its parent (null at a root, so the picker cannot climb out) and the sorted names.
+ */
+function secretsman_backup_browse(string $dir, array $roots): array
+{
+    $real = $dir === '' ? false : realpath($dir);
+    if ($real === false || !is_dir($real)) {
+        throw new SecretsmanError('secretsman: that folder does not exist');
+    }
+    $rootReal = null;
+    foreach ($roots as $r) {
+        $rr = realpath($r);
+        if ($rr !== false && ($real === $rr || str_starts_with($real, rtrim($rr, '/') . '/'))) {
+            $rootReal = $rr;
+            break;
+        }
+    }
+    if ($rootReal === null) {
+        throw new SecretsmanError('secretsman: folders can only be browsed under ' . implode(' or ', $roots));
+    }
+    $names = [];
+    foreach (@scandir($real) ?: [] as $n) {
+        if ($n[0] !== '.' && is_dir($real . '/' . $n)) {
+            $names[] = $n;
+        }
+    }
+    sort($names, SORT_NATURAL | SORT_FLAG_CASE);
+    return [
+        'path' => $real,
+        'parent' => $real === $rootReal ? null : dirname($real),
+        'dirs' => array_slice($names, 0, 500),
+    ];
+}

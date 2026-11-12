@@ -1,0 +1,164 @@
+/* vendored from kmbrimble/design-system@b6c9faf — do not edit, change upstream */
+/* Kiztigs Design System — tokens. The ONLY place values live.
+ * Source commit: (set by consumer when vendoring — see CLAUDE.md "How consumers adopt").
+ *
+ * Intent: neutral chrome, a violet -> magenta accent used sparingly (primary actions,
+ * the current item, focus rings), real elevation (layered violet-tinted shadows plus a
+ * top highlight, never a lone hairline), generous radius. Light is a soft lavender
+ * off-white, dark is a deep charcoal-navy — never pure white/black backgrounds.
+ * Every fg/bg pair is verified by scripts/contrast-check.mjs, which parses THIS file:
+ * run it after touching any colour. DESIGN.md front matter must match the light values.
+ *
+ * Theme mechanism: light in :root; dark under [data-theme='dark'] (apps with a theme
+ * script set it on <html>; the bare attribute selector also works on any wrapper, which
+ * preview.html relies on); the identical dark values are repeated under
+ * prefers-color-scheme so apps WITHOUT a theme script still follow the OS.
+ * Keep the three dark copies identical (contrast-check enforces it). */
+:root,
+[data-theme='light'] {
+  color-scheme: light dark;
+
+  /* System fonts only — no webfonts (offline-first: a failed @import means FOUT/CLS). */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Type scale. Rem-based, checked at an 80% root font size: nothing below ~15px effective. */
+  --text-xs: 0.8125rem;
+  --text-sm: 0.9375rem;
+  --text-base: 1.0625rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.5rem;
+  --text-2xl: 2rem;
+  --leading-tight: 1.15;
+  --leading-normal: 1.4;
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* Spacing, 4px base. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  --radius-sm: 0.5rem;
+  --radius-md: 0.875rem;
+  --radius-lg: 1.25rem;
+  --radius-xl: 1.5rem;
+  --radius-full: 9999px;
+
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Accent: violet -> magenta. Sparingly: primary actions, the current item, focus. */
+  --accent: #7c3aed;
+  --accent-2: #a78bfa;
+  --on-accent: #ffffff; /* text on a SOLID --accent fill (not on the gradient) */
+  --gradient-start: #7c3aed;
+  --gradient-end: #be185d;
+  --gradient-primary: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+
+  /* Light scheme: soft lavender-tinted off-white, not stark white. */
+  --bg: #f6f4fb;
+  --surface: #ffffff;
+  --surface-2: #efebf8;
+  --fg: #1a1523;
+  --fg-muted: #635f72;
+  --border: #e2ddf0;
+  --border-strong: #8f81b5;
+
+  /* Elevation: a tight contact shadow + a soft ambient one, violet-tinted not black.
+   * Cards must visibly float, not just carry a hairline. */
+  --shadow-1: 0 1px 2px rgb(88 28 135 / 0.06), 0 1px 1px rgb(88 28 135 / 0.04);
+  --shadow-2: 0 2px 6px rgb(88 28 135 / 0.08), 0 8px 24px rgb(88 28 135 / 0.12);
+  --shadow-3: 0 4px 10px rgb(88 28 135 / 0.10), 0 16px 40px rgb(88 28 135 / 0.16);
+  --inset-highlight: inset 0 1px 0 rgb(255 255 255 / 0.6);
+
+  /* Status: text colour, a tint for chips/backgrounds, and (warn/alert) the text colour
+   * to use when the status colour fills a whole bar. */
+  --status-ok: #1e6b3a;
+  --status-ok-tint: #e4f0e8;
+  --status-warn: #8a5a00;
+  --status-warn-tint: #fbeedc;
+  --status-warn-on-fill: #ffffff;
+  --status-alert: #b3261e;
+  --status-alert-tint: #fbe4e2;
+  --status-alert-on-fill: #ffffff;
+}
+
+:root[data-theme='dark'],
+[data-theme='dark'] {
+  /* Deep charcoal/near-navy, never pure black; surface and surface-2 step up so layering
+   * is visible even before shadow is added. */
+  --bg: #14131c;
+  --surface: #1d1b29;
+  --surface-2: #262433;
+  --fg: #ede9f7;
+  --fg-muted: #a79fc0;
+  --border: #333044;
+  --border-strong: #716b92;
+
+  /* --accent is lighter: for text/border/glow against dark surfaces. Do NOT put white on
+   * it — use --on-accent. The gradient stops are deliberately darker so white text on a
+   * gradient fill keeps its own contrast headroom. */
+  --accent: #a78bfa;
+  --accent-2: #c4b5fd;
+  --on-accent: #17181a;
+  --gradient-start: #6d28d9;
+  --gradient-end: #9d174d;
+  --gradient-primary: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+
+  /* Black shadows vanish on dark: depth comes from a wide black shadow, a violet glow
+   * and a 1px top highlight so the card edge catches light. */
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.4), inset 0 1px 0 rgb(255 255 255 / 0.04);
+  --shadow-2: 0 2px 8px rgb(0 0 0 / 0.5), 0 8px 24px rgb(139 92 246 / 0.14), inset 0 1px 0 rgb(255 255 255 / 0.05);
+  --shadow-3: 0 4px 14px rgb(0 0 0 / 0.55), 0 16px 44px rgb(139 92 246 / 0.2), inset 0 1px 0 rgb(255 255 255 / 0.06);
+  --inset-highlight: inset 0 1px 0 rgb(255 255 255 / 0.06);
+
+  --status-ok: #5fd489;
+  --status-ok-tint: #173323;
+  --status-warn: #f2b830;
+  --status-warn-tint: #3a2c0c;
+  --status-warn-on-fill: #17181a;
+  --status-alert: #ff6b60;
+  --status-alert-tint: #3b1512;
+  --status-alert-on-fill: #17181a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #14131c;
+    --surface: #1d1b29;
+    --surface-2: #262433;
+    --fg: #ede9f7;
+    --fg-muted: #a79fc0;
+    --border: #333044;
+    --border-strong: #716b92;
+
+    --accent: #a78bfa;
+    --accent-2: #c4b5fd;
+    --on-accent: #17181a;
+    --gradient-start: #6d28d9;
+    --gradient-end: #9d174d;
+    --gradient-primary: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 0.4), inset 0 1px 0 rgb(255 255 255 / 0.04);
+    --shadow-2: 0 2px 8px rgb(0 0 0 / 0.5), 0 8px 24px rgb(139 92 246 / 0.14), inset 0 1px 0 rgb(255 255 255 / 0.05);
+    --shadow-3: 0 4px 14px rgb(0 0 0 / 0.55), 0 16px 44px rgb(139 92 246 / 0.2), inset 0 1px 0 rgb(255 255 255 / 0.06);
+    --inset-highlight: inset 0 1px 0 rgb(255 255 255 / 0.06);
+
+    --status-ok: #5fd489;
+    --status-ok-tint: #173323;
+    --status-warn: #f2b830;
+    --status-warn-tint: #3a2c0c;
+    --status-warn-on-fill: #17181a;
+    --status-alert: #ff6b60;
+    --status-alert-tint: #3b1512;
+    --status-alert-on-fill: #17181a;
+  }
+}

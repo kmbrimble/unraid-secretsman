@@ -16,6 +16,11 @@ jobs:
         with:
           fetch-depth: 0   # tags are needed by the release-readiness step
 
+      # The UI build must give the same bytes on every runner: same pinned Node, lockfile-pinned packages (npm ci).
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22.23.4'
+
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # v2
         with:
           php-version: '8.4'
@@ -23,6 +28,9 @@ jobs:
 
       - name: Lint
         run: find src plugin tests -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: UI unit tests and design contrast check
+        run: cd ui && npm ci --no-audit --no-fund && npm test && npm run check:contrast
 
       - name: Test
         run: php tests/run.php
@@ -47,6 +55,11 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
+      # The UI build must give the same bytes on every runner: same pinned Node, lockfile-pinned packages (npm ci).
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22.23.4'
+
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # v2
         with:
           php-version: '8.1'
@@ -54,6 +67,9 @@ jobs:
 
       - name: Lint
         run: find src plugin tests -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: UI unit tests and design contrast check
+        run: cd ui && npm ci --no-audit --no-fund && npm test && npm run check:contrast
 
       - name: Test
         run: php tests/run.php

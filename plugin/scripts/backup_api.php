@@ -2,9 +2,9 @@
 declare(strict_types=1);
 
 /**
- * secretsman — backend for SecretsMan.page's Backup & Restore section. Same
- * shape as store_api.php: one dispatch, one renderer reused for the initial
- * paint and every mutation, JSON responses, requires only src/secretsman.php
+ * secretsman — JSON backend for the web app's Backup & Restore section. Same
+ * shape as store_api.php: one dispatch, one JSON payload (config_payload())
+ * for the initial load and every mutation, no HTML rendering, requires only src/secretsman.php
  * + src/backup.php (never common.php — see store_api.php's header comment;
  * the same php-fpm/STDERR reasoning applies here), and deliberately NO CSRF
  * check of its own (see store_api.php's header comment and CLAUDE.md's
@@ -38,102 +38,37 @@ if (empty($_POST) && (int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) {
     respond(['ok' => false, 'error' => 'secretsman: upload too large — this server accepts POST bodies up to ' . ini_get('post_max_size') . ' (post_max_size); try a smaller archive']);
 }
 
-/** Escape for HTML text content — every interpolated value goes through this. */
-function h(string $s): string
-{
-    return htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
-}
-
-function option(string $value, string $label, string $selected): string
-{
-    $sel = $value === $selected ? ' selected' : '';
-    return '<option value="' . h($value) . '"' . $sel . '>' . h($label) . '</option>';
-}
-
 /**
- * The one renderer for this section — the config form (populated with the
- * current settings), status, and the restore controls. Never receives or
- * emits the backup password's actual value: config_get reports only
- * whether one is set, never what it is.
+ * Backup state for the app: settings, whether an archive password is set (never the password), the archives found
+ * at the destination (name, mtime, size: never a path), and the last run. Timestamps are epoch seconds; the
+ * browser formats them.
  */
-function render_backup_html(array $config, bool $passwordSet, array $archives): string
-{
-    $schedule = $config['schedule'] ?? ['mode' => 'off', 'hour' => 0, 'minute' => 0, 'weekday' => 0, 'dayOfMonth' => 1];
-    $mode = $schedule['mode'] ?? 'off';
-
-    $html = '<table class="new"><tr>';
-    $html .= '<td>Destination</td><td>'
-        . '<span style="display:flex;align-items:center;gap:0.5em">'
-        . '<input type="text" id="bk-dest" style="flex:1 1 auto;width:auto" value="' . h((string)($config['destination'] ?? '')) . '" placeholder="/mnt/user/backups/secretsman">'
-        . '<button id="bk-dest-browse" type="button">Browse&hellip;</button>'
-        . '</span>'
-        . '<div id="bk-dest-tree" style="display:none;max-height:16em;overflow:auto;border:1px solid var(--input-border-color, #888);padding:.5em;margin-top:.5em"></div>'
-        . '</td>';
-    $html .= '</tr><tr>';
-    $html .= '<td>Schedule</td><td>'
-        . '<select id="bk-mode" class="narrow">'
-        . option('off', 'Off', $mode) . option('daily', 'Daily', $mode)
-        . option('weekly', 'Weekly', $mode) . option('monthly', 'Monthly', $mode)
-        . '</select> '
-        . '<input type="number" id="bk-hour" class="narrow" min="0" max="23" value="' . (int)($schedule['hour'] ?? 0) . '" title="Hour (0-23)"> : '
-        . '<input type="number" id="bk-minute" class="narrow" min="0" max="59" value="' . (int)($schedule['minute'] ?? 0) . '" title="Minute (0-59)"> '
-        . '<select id="bk-weekday" class="narrow" title="Day of week">'
-        . option('0', 'Sunday', (string)($schedule['weekday'] ?? 0)) . option('1', 'Monday', (string)($schedule['weekday'] ?? 0))
-        . option('2', 'Tuesday', (string)($schedule['weekday'] ?? 0)) . option('3', 'Wednesday', (string)($schedule['weekday'] ?? 0))
-        . option('4', 'Thursday', (string)($schedule['weekday'] ?? 0)) . option('5', 'Friday', (string)($schedule['weekday'] ?? 0))
-        . option('6', 'Saturday', (string)($schedule['weekday'] ?? 0))
-        . '</select> '
-        . '<input type="number" id="bk-dayofmonth" class="narrow" min="1" max="28" value="' . (int)($schedule['dayOfMonth'] ?? 1) . '" title="Day of month (1-28)">'
-        . '</td></tr><tr>';
-    $html .= '<td>Keep last</td><td><input type="number" id="bk-retention" class="narrow" min="0" value="' . (int)($config['retention'] ?? 3) . '"> archives (0 = unlimited)</td>';
-    $html .= '</tr><tr>';
-    $html .= '<td>Archive password</td><td>'
-        . '<span style="display:inline-flex;align-items:center;gap:0.5em">'
-        . '<input type="password" id="bk-password" autocomplete="new-password" placeholder="'
-        . ($passwordSet ? 'set — leave blank to keep it' : 'not set yet') . '">'
-        . '<label style="white-space:nowrap"><input type="checkbox" id="bk-password-show"> show</label>'
-        . '</span>'
-        . '</td></tr></table>';
-    $html .= '<button id="bk-save" type="button">Save backup settings</button> ';
-    $html .= '<button id="bk-now" type="button"' . ($passwordSet ? '' : ' disabled title="Set a password first"') . '>Back up now</button> ';
-    $html .= '<button id="bk-download" type="button"' . (empty($archives) ? ' disabled title="No archives yet"' : '') . '>Download most recent</button>';
-
-    $last = $config['lastRun'] ?? null;
-    if ($last) {
-        $when = date('Y-m-d H:i:s', (int)$last['time']);
-        $status = $last['ok'] ? 'ok' : 'FAILED: ' . h((string)$last['message']);
-        $html .= '<p class="notice">Last backup: ' . h($when) . ' — ' . $status . '</p>';
-    } else {
-        $html .= '<p class="notice">No backup has run yet.</p>';
-    }
-
-    $html .= '<h4>Restore</h4>';
-    if ($archives) {
-        $html .= '<select id="bk-restore-select"><option value="">— choose an existing archive —</option>';
-        foreach ($archives as $a) {
-            $when = date('Y-m-d H:i:s', $a['mtime']);
-            $html .= '<option value="' . h($a['name']) . '">' . h($a['name']) . ' (' . h($when) . ', ' . $a['bytes'] . ' bytes)</option>';
-        }
-        $html .= '</select> or ';
-    }
-    $html .= '<input type="file" id="bk-restore-file"> ';
-    $html .= '<input type="password" id="bk-restore-password" placeholder="archive password" autocomplete="off"> ';
-    $html .= '<label><input type="radio" name="bk-restore-mode" value="replace" checked> Replace store entirely</label> ';
-    $html .= '<label><input type="radio" name="bk-restore-mode" value="merge"> Merge (add missing only)</label> ';
-    $html .= '<button id="bk-restore" type="button">Restore</button>';
-    $html .= '<span id="bk-restore-err" class="errortext"></span>';
-
-    return $html;
-}
-
 function config_payload(): array
 {
     $config = secretsman_backup_config_load();
     $passwordSet = secretsman_backup_password_load() !== null;
     $archives = secretsman_backup_list_archives((string)($config['destination'] ?? ''));
+    $schedule = $config['schedule'] ?? [];
+    $last = $config['lastRun'] ?? null;
     return [
         'ok' => true,
-        'html' => render_backup_html($config, $passwordSet, $archives),
+        'config' => [
+            'destination' => (string)($config['destination'] ?? ''),
+            'schedule' => [
+                'mode' => (string)($schedule['mode'] ?? 'off'),
+                'hour' => (int)($schedule['hour'] ?? 0),
+                'minute' => (int)($schedule['minute'] ?? 0),
+                'weekday' => (int)($schedule['weekday'] ?? 0),
+                'dayOfMonth' => (int)($schedule['dayOfMonth'] ?? 1),
+            ],
+            'retention' => (int)($config['retention'] ?? 3),
+        ],
+        'passwordSet' => $passwordSet,
+        'archives' => array_map(
+            fn($a) => ['name' => $a['name'], 'mtime' => (int)$a['mtime'], 'bytes' => (int)$a['bytes']],
+            $archives
+        ),
+        'lastRun' => $last ? ['time' => (int)$last['time'], 'ok' => (bool)$last['ok'], 'message' => (string)$last['message']] : null,
         'uploadLimitBytes' => secretsman_backup_upload_limit_bytes(),
     ];
 }
@@ -154,12 +89,38 @@ function reregister_cron(): void
     }
 }
 
+/** Server-side range check: the form's min/max attributes are not enforced when saving goes through a button. */
+function validate_schedule(array $s, int $retention): void
+{
+    $checks = [
+        ['mode', in_array($s['mode'], ['off', 'daily', 'weekly', 'monthly'], true)],
+        ['hour', $s['hour'] >= 0 && $s['hour'] <= 23],
+        ['minute', $s['minute'] >= 0 && $s['minute'] <= 59],
+        ['weekday', $s['weekday'] >= 0 && $s['weekday'] <= 6],
+        ['day of month', $s['dayOfMonth'] >= 1 && $s['dayOfMonth'] <= 28],
+        ['retention', $retention >= 0],
+    ];
+    foreach ($checks as [$name, $ok]) {
+        if (!$ok) {
+            throw new SecretsmanError("secretsman: backup schedule {$name} is out of range");
+        }
+    }
+}
+
 $action = $_POST['action'] ?? '';
 
 try {
     switch ($action) {
         case 'list':
             respond(config_payload());
+
+        case 'browse':
+            // Folder picker for the destination field. Confined to /mnt and /boot; see secretsman_backup_browse().
+            $rootsEnv = getenv('SECRETSMAN_BROWSE_ROOTS');
+            $roots = $rootsEnv !== false && $rootsEnv !== '' ? explode(':', $rootsEnv) : ['/mnt', '/boot'];
+            $dir = (string)($_POST['dir'] ?? '');
+            $listing = secretsman_backup_browse($dir === '' ? $roots[0] : $dir, $roots);
+            respond(['ok' => true, 'roots' => $roots] + $listing);
 
         case 'config_set':
             $config = secretsman_backup_config_load();
@@ -172,6 +133,7 @@ try {
                 'dayOfMonth' => (int)($_POST['dayOfMonth'] ?? 1),
             ];
             $config['retention'] = (int)($_POST['retention'] ?? 3);
+            validate_schedule($config['schedule'], $config['retention']);
             secretsman_backup_config_save($config);
 
             $newPassword = (string)($_POST['password'] ?? '');

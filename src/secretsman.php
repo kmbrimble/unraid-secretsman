@@ -205,6 +205,13 @@ function secretsman_default_store_path(): string
  */
 function secretsman_check_name(string $ns, string $key): void
 {
+    // PHP's json_decode turns a purely numeric object key into an int array key, which the shape validation then
+    // (correctly) refuses. Such a name could be saved by nothing and loaded by nothing, so refuse it up front.
+    foreach (['namespace' => $ns, 'key' => $key] as $what => $v) {
+        if ($v !== '' && ctype_digit($v)) {
+            throw new SecretsmanError("secretsman: the {$what} cannot be all digits — add a letter (for example 'app{$v}')");
+        }
+    }
     try {
         $combined = secretsman_parse_token("!secret {$ns}/{$key}");
         if ($combined['kind'] === 'token' && $combined['ns'] === $ns && $combined['key'] === $key) {
@@ -353,10 +360,22 @@ function secretsman_store_set_unlocked(string $path, string $ns, string $key, st
     }
 
     $store[$ns][$key] = $value;
-    ksort($store[$ns]);
-    ksort($store);
 
-    secretsman_save_store($path, $store);
+    secretsman_save_store($path, secretsman_sort_store($store));
+}
+
+/**
+ * Namespaces and keys in natural, case-insensitive order (alpha, Beta, key2, key10).
+ * A plain ksort() sorts every capital before every lowercase letter.
+ */
+function secretsman_sort_store(array $store): array
+{
+    foreach ($store as &$keys) {
+        ksort($keys, SORT_NATURAL | SORT_FLAG_CASE);
+    }
+    unset($keys);
+    ksort($store, SORT_NATURAL | SORT_FLAG_CASE);
+    return $store;
 }
 
 /** Delete one secret; prunes the namespace too if it's now empty. */

@@ -1157,6 +1157,23 @@ t('plg install: a failed upgradepkg aborts before any .txz is deleted', function
     assert_eq(sorted($all), $left);
 });
 
+/**
+ * Build ui/ once per test run and point build-plugin.sh at it (SECRETSMAN_UI_DIST), so the several package builds
+ * below do not each run npm. Returns false when node/npm are missing: the caller reports a skip (a failure in CI).
+ */
+function ui_dist_for_tests(): ?string
+{
+    static $dist = false;
+    if ($dist !== false) return $dist;
+    $ui = __DIR__ . '/../ui';
+    exec('command -v npm >/dev/null 2>&1', $o, $have);
+    if ($have !== 0) return $dist = null;
+    exec('cd ' . escapeshellarg($ui) . ' && npm ci --no-audit --no-fund --loglevel=error 2>&1 && npm run build 2>&1', $out, $code);
+    assert_eq(0, $code, 'ui build must succeed: ' . implode("\n", array_slice($out, -15)));
+    putenv('SECRETSMAN_UI_DIST=' . realpath($ui . '/dist'));
+    return $dist = realpath($ui . '/dist');
+}
+
 t('plg: the packaged .txz extracts to the real absolute install path, not a bare package-name root', function () {
     // Caught live during Gate 2: scripts/build-plugin.sh archived the tree
     // rooted at "unraid-secretsman/...". Slackware's upgradepkg/installpkg
@@ -1167,7 +1184,7 @@ t('plg: the packaged .txz extracts to the real absolute install path, not a bare
     // silently, since Unraid's installer only captures stdout, not stderr.
     // This runs the real packaging script and inspects the real archive —
     // not a description of what it should do.
-    $dir = scratch_dir();
+    if (ui_dist_for_tests() === null) { skip('plg: packaged .txz layout', 'npm not installed'); return; }
     exec('bash ' . escapeshellarg(__DIR__ . '/../scripts/build-plugin.sh') . ' test-version 2>&1', $out, $code);
     assert_eq(0, $code, 'build-plugin.sh must succeed: ' . implode("\n", $out));
 
@@ -1186,8 +1203,43 @@ t('plg: the packaged .txz extracts to the real absolute install path, not a bare
         );
     }
 
+    $base = 'usr/local/emhttp/plugins/unraid-secretsman/';
+    foreach (['SecretsMan.page', 'README.md', 'app/index.php', 'app/assets/app.js', 'app/assets/app.css', 'scripts/store_api.php'] as $must) {
+        assert_true(in_array($base . $must, $entries, true), "package is missing $must");
+    }
+
     @unlink($txz);
     @unlink(__DIR__ . '/../dist/unraid-secretsman.md5');
+});
+
+t('ui: SecretsMan.page is a thin iframe host (Tasks:91 tab, open-full-page link), with no store access or old page body', function () {
+    $page = file_get_contents(__DIR__ . '/../plugin/SecretsMan.page');
+    assert_true(str_contains($page, 'Menu="Tasks:91"'));
+    assert_true(str_contains($page, '<iframe'));
+    assert_true(str_contains($page, 'Open full page'));
+    assert_true(str_contains($page, '/plugins/unraid-secretsman/app/index.php'), 'lowercase app path (uppercase routes to template.php)');
+    foreach (['store_api', 'secretsman.php', 'jquery.filetree', '$.post'] as $gone) {
+        assert_true(!str_contains($page, $gone), "page must not contain $gone");
+    }
+    assert_true(substr_count($page, "\n") < 60, 'page should stay thin');
+});
+
+t('ui: the built app is deterministic, self-contained (no CDN, no webfont) and wired to the real endpoints', function () {
+    $dist = ui_dist_for_tests();
+    if ($dist === null) { skip('ui: built app checks', 'npm not installed'); return; }
+    $before = [md5_file("$dist/assets/app.js"), md5_file("$dist/assets/app.css")];
+    exec('cd ' . escapeshellarg(__DIR__ . '/../ui') . ' && npm run build 2>&1', $out, $code);
+    assert_eq(0, $code, implode("\n", $out));
+    assert_eq($before, [md5_file("$dist/assets/app.js"), md5_file("$dist/assets/app.css")], 'rebuilding changed the bytes');
+    $js = file_get_contents("$dist/assets/app.js");
+    $css = file_get_contents("$dist/assets/app.css");
+    $withoutNs = preg_replace('#https?://www\.w3\.org/[A-Za-z0-9/._-]*#', '', $js . $css);
+    assert_eq(0, preg_match('#https?://#', $withoutNs), 'built app must not reference an external URL');
+    assert_eq(0, preg_match('#@font-face|\.woff2?#', $css), 'no webfonts');
+    foreach (['store_api.php', 'backup_api.php', 'backup_download.php', 'X-CSRF-Token', 'application/x-www-form-urlencoded'] as $needle) {
+        assert_true(str_contains($js, $needle), "built app should reference $needle");
+    }
+    assert_true(!str_contains($js, 'multipart') && !str_contains($js, 'FormData'), 'never multipart: nginx auth_request times out on it');
 });
 
 t('plg: the .txz build is byte-reproducible across umask, TZ and xz threading defaults', function () {
@@ -1195,6 +1247,7 @@ t('plg: the .txz build is byte-reproducible across umask, TZ and xz threading de
     // match, so the build must not depend on the machine. It did: xz >= 5.6 compresses multi-threaded by default,
     // which writes sizes into the block header, so the container (xz 5.8) built 4285115b... where Gitea CI built
     // 960487e7... from a byte-identical tar stream. Each variant perturbs something a runner can differ in.
+    if (ui_dist_for_tests() === null) { skip('plg: reproducible build', 'npm not installed'); return; }
     $root = __DIR__ . '/..';
     $variants = [
         'plain' => '',
@@ -1661,41 +1714,10 @@ t('web: store_api.php rejects a non-POST request without ever reaching the store
     assert_true(str_contains($resp['error'], 'POST required'));
 });
 
-t('web: store_api.php list returns the rendered table html', function () {
-    $dir = scratch_dir();
-    $storePath = write_store($dir, ['ns' => ['k' => 'v']]);
-    // secretsman_default_store_path() reads SECRETSMAN_STORE_PATH at call
-    // time inside the subprocess, so it must be a real env var, not just
-    // $_SERVER — putenv() here affects proc_open's inherited environment.
-    putenv("SECRETSMAN_STORE_PATH={$storePath}");
-    try {
-        $resp = run_web_script(__DIR__ . '/../plugin/scripts/store_api.php', ['action' => 'list']);
-    } finally {
-        putenv('SECRETSMAN_STORE_PATH');
-    }
-    assert_eq(true, $resp['ok']);
-    assert_true(str_contains($resp['html'], 'k'), 'rendered table should mention the key name');
-});
-
 t('web: store_api.php rejects an unknown action', function () {
     $resp = run_web_script(__DIR__ . '/../plugin/scripts/store_api.php', ['action' => 'nonsense']);
     assert_eq(false, $resp['ok']);
     assert_true(str_contains($resp['error'], 'unknown action'));
-});
-
-t('web: backup_api.php list reports the real upload limit and no password set', function () {
-    $dir = scratch_dir();
-    putenv("SECRETSMAN_BACKUP_CONFIG_PATH={$dir}/backup-config.json");
-    putenv("SECRETSMAN_BACKUP_PASSWORD_PATH={$dir}/backup-password");
-    try {
-        $resp = run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', ['action' => 'list']);
-    } finally {
-        putenv('SECRETSMAN_BACKUP_CONFIG_PATH');
-        putenv('SECRETSMAN_BACKUP_PASSWORD_PATH');
-    }
-    assert_eq(true, $resp['ok']);
-    assert_true($resp['uploadLimitBytes'] > 0);
-    assert_true(str_contains($resp['html'], 'not set yet'));
 });
 
 t('web: backup_api.php restore rejects a path-traversal attempt in "selected" without touching anything outside the destination', function () {
@@ -1753,6 +1775,309 @@ t('web: backup_api.php reports oversized-and-silently-emptied POST bodies clearl
     $resp = run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', [], ['CONTENT_LENGTH' => '99999999']);
     assert_eq(false, $resp['ok']);
     assert_true(str_contains($resp['error'], 'too large'));
+});
+
+// ---------------------------------------------------------------------------
+// UI backend (1.1.0): JSON list shapes, natural case-insensitive ordering, the write/reveal dispatchers, and the
+// app/index.php shell. store_api.php / backup_api.php no longer render HTML at all.
+// ---------------------------------------------------------------------------
+
+/** Run $fn with env vars set (null = unset), restoring afterwards. proc_open children inherit them. */
+function with_env(array $env, callable $fn)
+{
+    $old = [];
+    foreach ($env as $k => $v) {
+        $old[$k] = getenv($k);
+        $v === null ? putenv($k) : putenv("$k=$v");
+    }
+    try {
+        return $fn();
+    } finally {
+        foreach ($old as $k => $v) {
+            $v === false ? putenv($k) : putenv("$k=$v");
+        }
+    }
+}
+
+function store_api(array $post, string $storePath, ?string $templatesDir = null): array
+{
+    return with_env(
+        ['SECRETSMAN_STORE_PATH' => $storePath, 'SECRETSMAN_TEMPLATES_DIR' => $templatesDir ?? (dirname($storePath) . '/no-templates')],
+        fn() => run_web_script(__DIR__ . '/../plugin/scripts/store_api.php', $post)
+    );
+}
+
+function backup_env(string $dir): array
+{
+    return ['SECRETSMAN_BACKUP_CONFIG_PATH' => "$dir/backup-config.json", 'SECRETSMAN_BACKUP_PASSWORD_PATH' => "$dir/backup-password"];
+}
+
+t('sort: namespaces and keys order naturally and case-insensitively (capitals no longer sort first)', function () {
+    $sorted = secretsman_sort_store([
+        'Zeta' => ['b' => '1', 'B2' => '1', 'a' => '1', 'key10' => '1', 'key2' => '1'],
+        'alpha' => ['x' => '1'],
+        'Beta' => ['x' => '1'],
+    ]);
+    assert_eq(['alpha', 'Beta', 'Zeta'], array_keys($sorted));
+    assert_eq(['a', 'b', 'B2', 'key2', 'key10'], array_keys($sorted['Zeta']));
+});
+
+t('sort: secretsman_store_set persists case-insensitive order to store.json', function () {
+    $dir = scratch_dir();
+    $path = write_store($dir, ['Zeta' => ['k' => 'v']]);
+    secretsman_store_set($path, 'alpha', 'b', 'v', false);
+    secretsman_store_set($path, 'alpha', 'A', 'v', false);
+    $raw = json_decode(file_get_contents($path), true);
+    assert_eq(['alpha', 'Zeta'], array_keys($raw));
+    assert_eq(['A', 'b'], array_keys($raw['alpha']));
+});
+
+t('web: store_api.php list returns JSON namespaces with value lengths and used-by, sorted, and never a value', function () {
+    $dir = scratch_dir();
+    $storePath = write_store($dir, ['Zed' => ['k' => 'SENTINEL-VALUE-123'], 'app' => ['token' => 'abcd', 'Alpha' => 'x']]);
+    $tpl = $dir . '/templates';
+    mkdir($tpl);
+    file_put_contents("$tpl/my-app.xml", '<?xml version="1.0"?><Container><Name>my-app</Name>'
+        . '<Config Name="T" Target="T" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">!secret app/token</Config>'
+        . '<Config Name="U" Target="U" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">!secret app/missing</Config>'
+        . '</Container>');
+    $resp = store_api(['action' => 'list'], $storePath, $tpl);
+    assert_eq(true, $resp['ok']);
+    assert_true(!isset($resp['html']), 'the server-side HTML renderer is gone');
+    assert_eq(['app', 'Zed'], array_column($resp['namespaces'], 'name'));
+    $app = $resp['namespaces'][0];
+    assert_eq(['Alpha', 'token'], array_column($app['keys'], 'key'));
+    assert_eq(4, $app['keys'][1]['length']);
+    assert_eq(['my-app'], $app['keys'][1]['usedBy']);
+    assert_eq([], $app['keys'][0]['usedBy']);
+    assert_eq(1, count($resp['orphans']));
+    assert_eq('app/missing', $resp['orphans'][0]['token']);
+    assert_eq(['my-app'], $resp['orphans'][0]['usedBy']);
+    assert_true(!str_contains(json_encode($resp), 'SENTINEL-VALUE-123'), 'list must never carry a value');
+});
+
+t('web: store_api.php list on a missing store is an empty list; on a corrupt store it reports the problem', function () {
+    $dir = scratch_dir();
+    $resp = store_api(['action' => 'list'], "$dir/store.json");
+    assert_eq(true, $resp['ok']);
+    assert_eq([], $resp['namespaces']);
+    file_put_contents("$dir/store.json", '{"a": {"b": "c",}}');
+    chmod("$dir/store.json", 0600);
+    $resp = store_api(['action' => 'list'], "$dir/store.json");
+    assert_eq(false, $resp['ok']);
+    assert_true($resp['error'] !== '');
+});
+
+t('web: store_api.php add / edit / reveal / delete work end to end; only reveal returns a value', function () {
+    $dir = scratch_dir();
+    $storePath = "$dir/store.json";
+    $r = store_api(['action' => 'add', 'ns' => 'zz-ui', 'key' => 'one', 'value' => 'first-value'], $storePath);
+    assert_eq(true, $r['ok']);
+    assert_true(!str_contains(json_encode($r), 'first-value'), 'add response must not echo the value');
+    assert_eq(11, $r['namespaces'][0]['keys'][0]['length']);
+
+    $dup = store_api(['action' => 'add', 'ns' => 'zz-ui', 'key' => 'one', 'value' => 'other'], $storePath);
+    assert_eq(false, $dup['ok']);
+    assert_true(str_contains($dup['error'], 'already exists'));
+
+    $r = store_api(['action' => 'edit', 'ns' => 'zz-ui', 'key' => 'one', 'value' => 'second'], $storePath);
+    assert_eq(true, $r['ok']);
+    assert_true(!str_contains(json_encode($r), 'second'));
+
+    $rev = store_api(['action' => 'reveal', 'ns' => 'zz-ui', 'key' => 'one'], $storePath);
+    assert_eq(['ok' => true, 'value' => 'second'], $rev);
+
+    $miss = store_api(['action' => 'reveal', 'ns' => 'zz-ui', 'key' => 'nope'], $storePath);
+    assert_eq(false, $miss['ok']);
+
+    $r = store_api(['action' => 'delete', 'ns' => 'zz-ui', 'key' => 'one'], $storePath);
+    assert_eq(true, $r['ok']);
+    assert_eq([], $r['namespaces']);
+});
+
+t('web: store_api.php rejects an invalid namespace/key at the server boundary and writes nothing', function () {
+    $dir = scratch_dir();
+    $storePath = "$dir/store.json";
+    foreach ([['bad ns', 'k'], ['ns', 'bad/key'], ['', 'k'], ['ns', '']] as [$ns, $key]) {
+        $r = store_api(['action' => 'add', 'ns' => $ns, 'key' => $key, 'value' => 'v'], $storePath);
+        assert_eq(false, $r['ok'], "should reject ns='$ns' key='$key'");
+    }
+    assert_true(!is_file($storePath), 'a rejected add must not create the store');
+    $r = store_api(['action' => 'add', 'ns' => 'ns', 'key' => 'k', 'value' => "line1\nline2"], $storePath);
+    assert_eq(false, $r['ok'], 'a newline-bearing value is rejected');
+});
+
+t('web: backup_api.php list returns structured JSON (config, passwordSet, archives, lastRun, limit) and no html', function () {
+    $dir = scratch_dir();
+    $resp = with_env(backup_env($dir), fn() => run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', ['action' => 'list']));
+    assert_eq(true, $resp['ok']);
+    assert_true(!isset($resp['html']), 'the server-side HTML renderer is gone');
+    assert_true($resp['uploadLimitBytes'] > 0);
+    assert_eq(false, $resp['passwordSet']);
+    assert_eq('off', $resp['config']['schedule']['mode']);
+    assert_eq(3, $resp['config']['retention']);
+    assert_eq([], $resp['archives']);
+    assert_eq(null, $resp['lastRun']);
+});
+
+t('web: backup_api.php config_set round-trips settings and never returns the password', function () {
+    $dir = scratch_dir();
+    $dest = "$dir/dest";
+    mkdir($dest, 0700);
+    $resp = with_env(backup_env($dir), fn() => run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', [
+        'action' => 'config_set', 'destination' => $dest, 'mode' => 'weekly', 'hour' => '4', 'minute' => '30',
+        'weekday' => '2', 'dayOfMonth' => '1', 'retention' => '5', 'password' => 'SENTINEL-PASSWORD',
+    ]));
+    assert_eq(true, $resp['ok'], json_encode($resp));
+    assert_eq(true, $resp['passwordSet']);
+    assert_eq($dest, $resp['config']['destination']);
+    assert_eq(['mode' => 'weekly', 'hour' => 4, 'minute' => 30, 'weekday' => 2, 'dayOfMonth' => 1], $resp['config']['schedule']);
+    assert_eq(5, $resp['config']['retention']);
+    assert_true(!str_contains(json_encode($resp), 'SENTINEL-PASSWORD'));
+});
+
+t('web: backup_api.php backup_now without a password set fails with a message, not a 500', function () {
+    $dir = scratch_dir();
+    $resp = with_env(backup_env($dir) + ['SECRETSMAN_STORE_PATH' => write_store($dir, ['a' => ['b' => 'c']])],
+        fn() => run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', ['action' => 'backup_now']));
+    assert_eq(false, $resp['ok']);
+    assert_true($resp['error'] !== '');
+});
+
+t('web: backup_api.php rejects a non-POST request and an unknown action', function () {
+    $r = run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', [], ['REQUEST_METHOD' => 'GET']);
+    assert_eq(false, $r['ok']);
+    assert_true(str_contains($r['error'], 'POST required'));
+    $r = run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', ['action' => 'nonsense']);
+    assert_eq(false, $r['ok']);
+    assert_true(str_contains($r['error'], 'unknown action'));
+});
+
+/** Run a GET page script as a subprocess and return its raw stdout. */
+function run_page_script(string $scriptPath, array $env): string
+{
+    return with_env($env, function () use ($scriptPath) {
+        $boot = sys_get_temp_dir() . '/secretsman-test-boot-' . bin2hex(random_bytes(8)) . '.php';
+        file_put_contents($boot, '<?php $_SERVER["REQUEST_METHOD"]="GET"; require ' . var_export($scriptPath, true) . ';');
+        $proc = proc_open(['php', $boot], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        assert_true($proc !== false);
+        $out = stream_get_contents($pipes[1]);
+        $err = stream_get_contents($pipes[2]);
+        foreach ($pipes as $p) { fclose($p); }
+        proc_close($proc);
+        unlink($boot);
+        assert_true($err === '', "page script wrote to stderr: $err");
+        return $out;
+    });
+}
+
+function theme_cfg(string $dir, string $theme): string
+{
+    file_put_contents("$dir/dynamix.cfg", "[display]\ntheme=\"$theme\"\n");
+    return "$dir/dynamix.cfg";
+}
+
+t('web: app/index.php emits the csrf token from var.ini, dark theme for black/gray and light for white/azure', function () {
+    $dir = scratch_dir();
+    file_put_contents("$dir/var.ini", "mdState=\"STARTED\"\ncsrf_token=\"SENTINELCSRF0123456789abcdef01234567\"\n");
+    $page = __DIR__ . '/../plugin/app/index.php';
+    foreach (['black' => 'dark', 'gray' => 'dark', 'white' => 'light', 'azure' => 'light'] as $theme => $expect) {
+        $html = run_page_script($page, ['SECRETSMAN_VAR_INI' => "$dir/var.ini", 'SECRETSMAN_DYNAMIX_CFG' => theme_cfg($dir, $theme)]);
+        assert_true(str_contains($html, 'data-theme="' . $expect . '"'), "$theme should give $expect");
+        assert_true(str_contains($html, 'data-csrf="SENTINELCSRF0123456789abcdef01234567"'), 'csrf token emitted');
+        assert_true(str_contains($html, 'assets/app.js?v='), 'versioned script reference');
+        assert_true(!str_contains($html, 'mdState'), 'nothing else from var.ini is emitted');
+    }
+});
+
+t('web: app/index.php with no var.ini or unknown theme still renders (empty token, light theme), never a fatal', function () {
+    $dir = scratch_dir();
+    $html = run_page_script(__DIR__ . '/../plugin/app/index.php', ['SECRETSMAN_VAR_INI' => "$dir/absent.ini", 'SECRETSMAN_DYNAMIX_CFG' => "$dir/absent.cfg"]);
+    assert_true(str_contains($html, 'data-csrf=""'));
+    assert_true(str_contains($html, 'data-theme="light"'));
+});
+
+t('web: app/index.php escapes a hostile csrf_token value', function () {
+    $dir = scratch_dir();
+    file_put_contents("$dir/var.ini", "csrf_token=\"x\\\"><script>alert(1)</script>\"\n");
+    $html = run_page_script(__DIR__ . '/../plugin/app/index.php', ['SECRETSMAN_VAR_INI' => "$dir/var.ini", 'SECRETSMAN_DYNAMIX_CFG' => theme_cfg($dir, 'white')]);
+    assert_true(!str_contains($html, '<script>alert'), 'token must be HTML-escaped');
+});
+
+t('web: backup_download.php streams the newest archive and reports none when there are none', function () {
+    $dir = scratch_dir();
+    $dest = "$dir/dest";
+    mkdir($dest, 0700);
+    $env = backup_env($dir);
+    $none = run_page_script(__DIR__ . '/../plugin/scripts/backup_download.php', $env);
+    assert_true(str_contains($none, 'no backup archives found'));
+    with_env($env, fn() => secretsman_backup_config_save(['destination' => $dest, 'schedule' => ['mode' => 'off'], 'retention' => 3, 'lastRun' => null]));
+    file_put_contents("$dest/secretsman-backup-20260101-000000.tar.enc", 'ARCHIVE-BYTES');
+    $got = run_page_script(__DIR__ . '/../plugin/scripts/backup_download.php', $env);
+    assert_eq('ARCHIVE-BYTES', $got);
+});
+
+
+t('browse: lists only subdirectories, sorted case-insensitively, hides dot-dirs, and reports parent', function () {
+    $dir = scratch_dir();
+    foreach (['beta', 'Alpha', '.hidden', 'gamma'] as $d) mkdir("$dir/$d");
+    file_put_contents("$dir/file.txt", 'x');
+    $r = secretsman_backup_browse("$dir", [$dir]);
+    assert_eq(realpath($dir), $r['path']);
+    assert_eq(['Alpha', 'beta', 'gamma'], $r['dirs']);
+    assert_eq(null, $r['parent'], 'at a root there is no parent to go up to');
+    $r2 = secretsman_backup_browse("$dir/beta", [$dir]);
+    assert_eq(realpath($dir), $r2['parent']);
+});
+
+t('browse: refuses anything outside the allowed roots, including dot-dot and symlink escapes', function () {
+    $dir = scratch_dir();
+    $root = "$dir/root";
+    mkdir($root);
+    mkdir("$dir/outside");
+    symlink("$dir/outside", "$root/link");
+    foreach (["$root/../outside", "$root/link", '/etc', "$dir/outside"] as $bad) {
+        $threw = false;
+        try { secretsman_backup_browse($bad, [$root]); } catch (SecretsmanError $e) { $threw = true; }
+        assert_true($threw, "should refuse $bad");
+    }
+    $threw = false;
+    try { secretsman_backup_browse("$root/nope", [$root]); } catch (SecretsmanError $e) { $threw = true; }
+    assert_true($threw, 'a missing directory is an error, not an empty listing');
+});
+
+t('web: backup_api.php browse returns JSON dirs confined to the configured roots', function () {
+    $dir = scratch_dir();
+    mkdir("$dir/root"); mkdir("$dir/root/one"); mkdir("$dir/elsewhere");
+    $env = backup_env($dir) + ['SECRETSMAN_BROWSE_ROOTS' => "$dir/root"];
+    $ok = with_env($env, fn() => run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', ['action' => 'browse', 'dir' => "$dir/root"]));
+    assert_eq(true, $ok['ok']);
+    assert_eq(['one'], $ok['dirs']);
+    $bad = with_env($env, fn() => run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', ['action' => 'browse', 'dir' => "$dir/elsewhere"]));
+    assert_eq(false, $bad['ok']);
+    $def = with_env($env, fn() => run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', ['action' => 'browse']));
+    assert_eq(true, $def['ok'], 'no dir means the first root');
+});
+
+t('names: an all-digit namespace or key is rejected with a clear message (PHP turns numeric JSON keys into ints, so the store could never load it)', function () {
+    foreach ([['123', 'k'], ['app', '0'], ['app', '2024']] as [$ns, $key]) {
+        $threw = false;
+        try { secretsman_check_name($ns, $key); } catch (SecretsmanError $e) { $threw = str_contains($e->getMessage(), 'digit'); }
+        assert_true($threw, "$ns/$key should be refused as all digits");
+    }
+    secretsman_check_name('app2', 'key1');
+    secretsman_check_name('a1', '1a');
+});
+
+t('web: backup_api.php config_set rejects out-of-range schedule values and saves nothing', function () {
+    $dir = scratch_dir();
+    $good = ['action' => 'config_set', 'destination' => "$dir/d", 'mode' => 'daily', 'hour' => '3', 'minute' => '5', 'weekday' => '0', 'dayOfMonth' => '1', 'retention' => '3', 'password' => ''];
+    foreach (['hour' => '99', 'minute' => '60', 'weekday' => '7', 'dayOfMonth' => '29', 'retention' => '-1', 'mode' => 'hourly'] as $field => $bad) {
+        $r = with_env(backup_env($dir), fn() => run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', [$field => $bad] + $good));
+        assert_eq(false, $r['ok'], "$field=$bad must be rejected");
+        assert_true(str_contains($r['error'], $field === 'dayOfMonth' ? 'day of month' : $field), "error should name $field: " . $r['error']);
+    }
+    assert_true(!is_file("$dir/backup-config.json"), 'a rejected save must not write the config');
 });
 
 t('runner: the summary counts skips, and a skip fails the run only under CI', function () {
