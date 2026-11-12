@@ -89,6 +89,24 @@ function reregister_cron(): void
     }
 }
 
+/** Server-side range check: the form's min/max attributes are not enforced when saving goes through a button. */
+function validate_schedule(array $s, int $retention): void
+{
+    $checks = [
+        ['mode', in_array($s['mode'], ['off', 'daily', 'weekly', 'monthly'], true)],
+        ['hour', $s['hour'] >= 0 && $s['hour'] <= 23],
+        ['minute', $s['minute'] >= 0 && $s['minute'] <= 59],
+        ['weekday', $s['weekday'] >= 0 && $s['weekday'] <= 6],
+        ['day of month', $s['dayOfMonth'] >= 1 && $s['dayOfMonth'] <= 28],
+        ['retention', $retention >= 0],
+    ];
+    foreach ($checks as [$name, $ok]) {
+        if (!$ok) {
+            throw new SecretsmanError("secretsman: backup schedule {$name} is out of range");
+        }
+    }
+}
+
 $action = $_POST['action'] ?? '';
 
 try {
@@ -115,6 +133,7 @@ try {
                 'dayOfMonth' => (int)($_POST['dayOfMonth'] ?? 1),
             ];
             $config['retention'] = (int)($_POST['retention'] ?? 3);
+            validate_schedule($config['schedule'], $config['retention']);
             secretsman_backup_config_save($config);
 
             $newPassword = (string)($_POST['password'] ?? '');

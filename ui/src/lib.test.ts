@@ -10,6 +10,8 @@ describe('nameError', () => {
     expect(nameError('a b', 'Key')).not.toBeNull()
     expect(nameError('a/b', 'Namespace')).not.toBeNull()
     expect(nameError('é', 'Key')).not.toBeNull()
+    expect(nameError('2024', 'Key')).toMatch(/digits/)
+    expect(nameError('a2024', 'Key')).toBeNull()
   })
 })
 

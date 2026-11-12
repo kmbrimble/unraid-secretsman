@@ -205,6 +205,13 @@ function secretsman_default_store_path(): string
  */
 function secretsman_check_name(string $ns, string $key): void
 {
+    // PHP's json_decode turns a purely numeric object key into an int array key, which the shape validation then
+    // (correctly) refuses. Such a name could be saved by nothing and loaded by nothing, so refuse it up front.
+    foreach (['namespace' => $ns, 'key' => $key] as $what => $v) {
+        if ($v !== '' && ctype_digit($v)) {
+            throw new SecretsmanError("secretsman: the {$what} cannot be all digits — add a letter (for example 'app{$v}')");
+        }
+    }
     try {
         $combined = secretsman_parse_token("!secret {$ns}/{$key}");
         if ($combined['kind'] === 'token' && $combined['ns'] === $ns && $combined['key'] === $key) {

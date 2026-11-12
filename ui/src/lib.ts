@@ -6,6 +6,7 @@ const NAME_RE = /^[A-Za-z0-9_.-]+$/
 export function nameError(value: string, label: string): string | null {
   if (value === '') return `${label} is required.`
   if (!NAME_RE.test(value)) return `${label} may only contain letters, digits and _ . -`
+  if (/^[0-9]+$/.test(value)) return `${label} cannot be all digits. Add a letter.`
   return null
 }
 

@@ -2059,6 +2059,27 @@ t('web: backup_api.php browse returns JSON dirs confined to the configured roots
     assert_eq(true, $def['ok'], 'no dir means the first root');
 });
 
+t('names: an all-digit namespace or key is rejected with a clear message (PHP turns numeric JSON keys into ints, so the store could never load it)', function () {
+    foreach ([['123', 'k'], ['app', '0'], ['app', '2024']] as [$ns, $key]) {
+        $threw = false;
+        try { secretsman_check_name($ns, $key); } catch (SecretsmanError $e) { $threw = str_contains($e->getMessage(), 'digit'); }
+        assert_true($threw, "$ns/$key should be refused as all digits");
+    }
+    secretsman_check_name('app2', 'key1');
+    secretsman_check_name('a1', '1a');
+});
+
+t('web: backup_api.php config_set rejects out-of-range schedule values and saves nothing', function () {
+    $dir = scratch_dir();
+    $good = ['action' => 'config_set', 'destination' => "$dir/d", 'mode' => 'daily', 'hour' => '3', 'minute' => '5', 'weekday' => '0', 'dayOfMonth' => '1', 'retention' => '3', 'password' => ''];
+    foreach (['hour' => '99', 'minute' => '60', 'weekday' => '7', 'dayOfMonth' => '29', 'retention' => '-1', 'mode' => 'hourly'] as $field => $bad) {
+        $r = with_env(backup_env($dir), fn() => run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', [$field => $bad] + $good));
+        assert_eq(false, $r['ok'], "$field=$bad must be rejected");
+        assert_true(str_contains($r['error'], $field === 'dayOfMonth' ? 'day of month' : $field), "error should name $field: " . $r['error']);
+    }
+    assert_true(!is_file("$dir/backup-config.json"), 'a rejected save must not write the config');
+});
+
 t('runner: the summary counts skips, and a skip fails the run only under CI', function () {
     assert_eq(['3 passed, 0 failed, 0 skipped', true], runner_summary(3, 0, 0, false));
     assert_eq(['3 passed, 0 failed, 0 skipped', true], runner_summary(3, 0, 0, true));

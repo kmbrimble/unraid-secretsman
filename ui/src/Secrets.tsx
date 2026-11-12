@@ -18,7 +18,8 @@ export function Secrets({ api, notify, version }: { api: Api; notify: Notify; ve
   // Background reload: only touches the table state. User-action results live in the toasts, which this never clears.
   const reload = () =>
     api.store({ action: 'list' }).then((d) => { setData(d); setLoadError(null) }).catch((e) => setLoadError(e.message))
-  useEffect(() => { void reload() }, [version])
+  // A restore can change any value, so revealed values from before it are stale: drop them.
+  useEffect(() => { setRevealed({}); void reload() }, [version])
 
   const q = query.trim().toLowerCase()
   const shown = useMemo(() => {
