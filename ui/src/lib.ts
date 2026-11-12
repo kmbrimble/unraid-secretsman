@@ -76,6 +76,7 @@ export async function copyText(text: string): Promise<boolean> {
   } catch {
     /* fall through to the legacy path */
   }
+  const prevFocus = document.activeElement as HTMLElement | null
   const ta = document.createElement('textarea')
   ta.value = text
   ta.setAttribute('readonly', '')
@@ -93,6 +94,7 @@ export async function copyText(text: string): Promise<boolean> {
     ok = false
   }
   ta.remove()
+  prevFocus?.focus?.({ preventScroll: true }) // the textarea took focus: give it back so keyboard users keep their place
   return ok
 }
 

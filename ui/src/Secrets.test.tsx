@@ -127,6 +127,15 @@ describe('adding', () => {
 describe('row actions', () => {
   const open = async () => { await mount(); await click(byText('button', 'Expand all')) }
 
+  it('copying hands keyboard focus back to the button that was used', async () => {
+    await open()
+    const btn = byText('button', 'Copy NS+Key') as HTMLElement
+    btn.focus()
+    await click(btn)
+    await flush()
+    expect(document.activeElement).toBe(btn)
+  })
+
   it('Copy NS+Key copies the reference and never calls reveal', async () => {
     await open()
     const btn = byText('button', 'Copy NS+Key')!
