@@ -64,7 +64,13 @@ source until you explicitly click Reveal on that one row; every other view only 
 length. The page also scans your saved templates and flags any `!secret` token that doesn't
 match a stored secret, or doesn't parse at all — the two mistakes that used to fail silently.
 
-![SecretsMan settings page](docs/screenshot-settings-page.png)
+The tab is a thin frame around a small web app (Preact, built with Vite, served by the webGUI itself: no
+daemon, no extra port, same login). Secrets are grouped by namespace, searchable, and sorted
+case-insensitively; each row shows its masked length, a **used by** chip for the containers whose templates
+reference it, and Copy token, Reveal, Edit and Delete. **Open full page** shows the same app in its own tab.
+The app follows the Unraid theme (black and gray are dark, white and azure are light).
+
+![SecretsMan web app](docs/screenshot-settings-page.png)
 
 The store also stays hand-editable at `/mnt/user/appdata/.secrets/store.json` — the page is an
 alternative, not a replacement.
@@ -72,7 +78,7 @@ alternative, not a replacement.
 ## Backup & restore
 
 `/mnt/user/appdata/.secrets/` is dotfile-prefixed, which common appdata-backup tooling
-routinely skips — without this, the store had no copy anywhere. The same Settings page has a
+routinely skips — without this, the store had no copy anywhere. The same app has a
 **Backup & Restore** section: set a destination and a password, then back up on a schedule or
 on demand. Archives are encrypted (7-Zip/AES-256 if you happen to have 7-Zip installed — not
 stock Unraid — otherwise `tar` + OpenSSL AES-256, both always present) and every archive is

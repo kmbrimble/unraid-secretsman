@@ -209,7 +209,7 @@ function Row(p: {
       <span class="sm-value">
         {p.value !== undefined
           ? <code class="sm-revealed" aria-label={`Value of ${p.ns}/${p.row.key}`}>{p.value}</code>
-          : <span class="sm-note" aria-label={`Hidden value, ${p.row.length} characters`}>{'•'.repeat(8)} {p.row.length} chars</span>}
+          : <span class="sm-note" aria-label={`Hidden value, ${p.row.length} ${p.row.length === 1 ? 'character' : 'characters'}`}>{'•'.repeat(8)} {p.row.length} {p.row.length === 1 ? 'char' : 'chars'}</span>}
       </span>
       {n > 0
         ? <button class="chip chip--ok sm-chipbtn" type="button" aria-expanded={p.usedOpen} onClick={p.toggleUsed}>Used by {n}</button>

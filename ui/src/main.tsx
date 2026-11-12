@@ -6,4 +6,5 @@ import './app.css'
 import { App } from './App'
 
 const root = document.getElementById('app')!
+root.textContent = ''
 render(<App csrf={root.dataset.csrf ?? ''} />, root)
