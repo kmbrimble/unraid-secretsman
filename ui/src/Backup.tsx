@@ -52,7 +52,7 @@ export function Backup({ api, notify, onRestored }: { api: Api; notify: Notify; 
   const now = () => run('now', async () => {
     const d = await api.backup<BackupPayload>({ action: 'backup_now' })
     setData(d)
-    notify.ok(d.message || 'Backup complete.')
+    notify.ok(d.message || 'Backup complete.', true)
   })
   const restore = () => run('restore', async () => {
     const d0 = data!
@@ -70,7 +70,7 @@ export function Backup({ api, notify, onRestored }: { api: Api; notify: Notify; 
       const n = (a?: string[]) => (a ? a.length : 0)
       notify.ok(r?.mode === 'merge'
         ? `Restore (merge) complete: ${n(r.added)} added, ${n(r.collisions)} already present and left untouched${n(r.collisions) ? ` (${r.collisions!.join(', ')})` : ''}.`
-        : `Restore (replace) complete: the store now holds ${n(r?.added)} secrets from the archive; ${n(r?.removed)} not in the archive were removed.`)
+        : `Restore (replace) complete: the store now holds ${n(r?.added)} secrets from the archive; ${n(r?.removed)} not in the archive were removed.`, true)
       setRpw(''); setFile(null); setSelected(''); onRestored()
     } finally { setConfirming(false) }
   })

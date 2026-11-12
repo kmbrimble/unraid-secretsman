@@ -11,19 +11,19 @@ export interface Api {
   store: <T = ListPayload>(data: Record<string, string>) => Promise<T>
   backup: <T>(data: Record<string, string>) => Promise<T>
 }
-export interface Notify { ok: (text: string) => void; err: (e: unknown) => void }
+export interface Notify { ok: (text: string, sticky?: boolean) => void; err: (e: unknown) => void }
 
 export function App({ csrf }: { csrf: string }) {
   const [toasts, setToasts] = useState<Toast[]>([])
   const seq = useRef(0)
-  const push = useCallback((kind: Toast['kind'], text: string) => {
+  const push = useCallback((kind: Toast['kind'], text: string, sticky = false) => {
     const id = ++seq.current
     setToasts((t) => [...t, { id, kind, text }])
-    if (kind === 'ok') setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 12000)
+    if (kind === 'ok' && !sticky) setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 12000)
   }, [])
   const dismiss = useCallback((id: number) => setToasts((t) => t.filter((x) => x.id !== id)), [])
   const notify: Notify = {
-    ok: (text) => push('ok', text),
+    ok: (text, sticky) => push('ok', text, sticky),
     err: (e) => push('alert', e instanceof ApiError || e instanceof Error ? e.message : String(e)),
   }
   const api: Api = {
