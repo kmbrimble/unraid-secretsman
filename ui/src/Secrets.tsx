@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'preact/hooks'
-import { copyText, nameError, tokenFor, type KeyRow, type ListPayload, type Namespace } from './lib'
-import { Field, Modal, ShowToggle } from './ui'
+import { copyText, nameError, nsSummary, tokenFor, type KeyRow, type ListPayload, type Namespace } from './lib'
+import { Field, Modal, ShowToggle, ThemeSwitch, TrashIcon } from './ui'
 import type { Api, Notify } from './App'
 
 type Editing = { mode: 'add'; ns: string; key: string } | { mode: 'edit'; ns: string; key: string }
@@ -14,6 +14,10 @@ export function Secrets({ api, notify, version }: { api: Api; notify: Notify; ve
   const [deleting, setDeleting] = useState<Deleting | null>(null)
   const [revealed, setRevealed] = useState<Record<string, string>>({})
   const [open, setOpen] = useState<Record<string, boolean>>({})
+  // Namespaces start collapsed. While searching, matching namespaces are open (searchOpen overrides, per query) and
+  // `expanded` is left alone, so clearing the search restores exactly what the user had open before.
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [searchOpen, setSearchOpen] = useState<Record<string, boolean>>({})
 
   // Background reload: only touches the table state. User-action results live in the toasts, which this never clears.
   const reload = () =>
@@ -32,6 +36,17 @@ export function Secrets({ api, notify, version }: { api: Api; notify: Notify; ve
       }))
       .filter((n) => n.keys.length > 0)
   }, [data, q])
+  const searching = q !== ''
+  const isOpen = (ns: string) => (searching ? (searchOpen[ns] ?? true) : !!expanded[ns])
+  const toggleNs = (ns: string) => {
+    const next = !isOpen(ns)
+    if (searching) setSearchOpen((o) => ({ ...o, [ns]: next }))
+    else setExpanded((e) => ({ ...e, [ns]: next }))
+  }
+  const setAll = (value: boolean) => {
+    if (searching) setSearchOpen(Object.fromEntries(shown.map((n) => [n.name, value])))
+    else setExpanded(Object.fromEntries((data?.namespaces ?? []).map((n) => [n.name, value])))
+  }
   const total = data?.namespaces.reduce((a, n) => a + n.keys.length, 0) ?? 0
 
   const reveal = async (ns: string, key: string) => {
@@ -50,6 +65,15 @@ export function Secrets({ api, notify, version }: { api: Api; notify: Notify; ve
     if (await copyText(t)) notify.ok(`Copied ${t}. Paste it into a template's Variable field in place of the value.`)
     else notify.err(new Error(`Your browser blocked copying. Select and copy this by hand: ${t}`))
   }
+  // Copy secret: the same server path as Reveal (one named value per explicit click). The value lives only in this
+  // local variable and a transient off-screen textarea inside copyText(): never in state, the DOM or a toast.
+  const copySecret = async (ns: string, key: string) => {
+    try {
+      const r = await api.store<{ value: string }>({ action: 'reveal', ns, key })
+      if (await copyText(r.value)) notify.ok(`Secret copied: ${ns}/${key}.`)
+      else notify.err(new Error(`Your browser blocked copying. Use Reveal on ${ns}/${key} and copy it by hand.`))
+    } catch (e) { notify.err(e) }
+  }
   const del = async (d: Deleting) => {
     try {
       const r = await api.store({ action: 'delete', ns: d.ns, key: d.key })
@@ -67,9 +91,12 @@ export function Secrets({ api, notify, version }: { api: Api; notify: Notify; ve
             <h1 class="sm-title">SecretsMan</h1>
             <p class="sm-sub">Keep passwords and API keys out of Docker templates.</p>
           </div>
-          <button class="btn btn--primary" type="button" onClick={() => setEditing({ mode: 'add', ns: '', key: '' })}>
-            Add secret
-          </button>
+          <div class="sm-head-actions">
+            <ThemeSwitch />
+            <button class="btn btn--primary" type="button" onClick={() => setEditing({ mode: 'add', ns: '', key: '' })}>
+              Add secret
+            </button>
+          </div>
         </div>
         <details class="sm-explain">
           <summary>How this works, and what it does not protect against</summary>
@@ -102,10 +129,16 @@ export function Secrets({ api, notify, version }: { api: Api; notify: Notify; ve
             It is not encrypted at rest, so protect it the way you would any file holding plaintext credentials.
           </p>
         </details>
-        <div class="sm-search">
-          <label for="sm-search" class="sm-label">Search secrets</label>
-          <input id="sm-search" class="input" type="search" placeholder="Search by namespace, key or container" value={query}
-            onInput={(e) => setQuery((e.target as HTMLInputElement).value)} />
+        <div class="sm-toolbar">
+          <div class="sm-search">
+            <label for="sm-search" class="sm-label">Search secrets</label>
+            <input id="sm-search" class="input" type="search" placeholder="Search by namespace, key or container" value={query}
+              onInput={(e) => { setQuery((e.target as HTMLInputElement).value); setSearchOpen({}) }} />
+          </div>
+          <div class="sm-toolbar-btns">
+            <button class="btn btn--secondary" type="button" onClick={() => setAll(true)}>Expand all</button>
+            <button class="btn btn--secondary" type="button" onClick={() => setAll(false)}>Collapse all</button>
+          </div>
         </div>
       </header>
 
@@ -126,32 +159,45 @@ export function Secrets({ api, notify, version }: { api: Api; notify: Notify; ve
       )}
       {data && q && shown.length === 0 && <p class="sm-note">No secrets match &ldquo;{query}&rdquo;.</p>}
 
-      {shown.map((n) => (
-        <section class="card sm-ns" key={n.name} aria-label={`Namespace ${n.name}`}>
-          <div class="sm-ns-bar">
-            <h2 class="section-label sm-ns-name">{n.name}</h2>
-            <span class="chip">{n.keys.length} {n.keys.length === 1 ? 'secret' : 'secrets'}</span>
-            <span class="sm-spacer" />
-            <button class="btn btn--ghost" type="button" onClick={() => setEditing({ mode: 'add', ns: n.name, key: '' })}>
-              Add to {n.name}
-            </button>
-          </div>
-          <ul class="sm-rows">
-            {n.keys.map((k) => (
-              <Row key={k.key} ns={n.name} row={k} value={revealed[`${n.name}/${k.key}`]}
-                usedOpen={!!open[`${n.name}/${k.key}`]}
-                toggleUsed={() => setOpen((o) => ({ ...o, [`${n.name}/${k.key}`]: !o[`${n.name}/${k.key}`] }))}
-                onReveal={() => reveal(n.name, k.key)} onCopy={() => copy(n.name, k.key)}
-                onEdit={() => setEditing({ mode: 'edit', ns: n.name, key: k.key })}
-                onDelete={() => setDeleting({ ns: n.name, key: k.key, usedBy: k.usedBy })} />
-            ))}
-          </ul>
-        </section>
-      ))}
+      {shown.map((n) => {
+        const o = isOpen(n.name)
+        const sum = nsSummary(n.keys)
+        const listId = `sm-ns-${encodeURIComponent(n.name)}`
+        return (
+          <section class="card sm-ns" key={n.name} aria-label={`Namespace ${n.name}`}>
+            <div class="sm-ns-bar">
+              <h2 class="sm-ns-h">
+                <button class="sm-ns-toggle" type="button" aria-expanded={o} aria-controls={listId} onClick={() => toggleNs(n.name)}>
+                  <span class="sm-chev" aria-hidden="true" />
+                  <span class="sm-ns-name">{n.name}</span>
+                  <span class="chip">{n.keys.length} {n.keys.length === 1 ? 'secret' : 'secrets'}</span>
+                  {sum.used > 0 && <span class="chip chip--ok">{sum.used} used</span>}
+                  {sum.unused > 0 && <span class="chip">{sum.unused} unused</span>}
+                </button>
+              </h2>
+              <button class="btn btn--secondary sm-small" type="button" onClick={() => setEditing({ mode: 'add', ns: n.name, key: '' })}>
+                Add to {n.name}
+              </button>
+            </div>
+            {o && (
+              <ul class="sm-rows" id={listId}>
+                {n.keys.map((k) => (
+                  <Row key={k.key} ns={n.name} row={k} value={revealed[`${n.name}/${k.key}`]}
+                    usedOpen={!!open[`${n.name}/${k.key}`]}
+                    toggleUsed={() => setOpen((x) => ({ ...x, [`${n.name}/${k.key}`]: !x[`${n.name}/${k.key}`] }))}
+                    onReveal={() => reveal(n.name, k.key)} onCopy={() => copy(n.name, k.key)} onCopySecret={() => copySecret(n.name, k.key)}
+                    onEdit={() => setEditing({ mode: 'edit', ns: n.name, key: k.key })}
+                    onDelete={() => setDeleting({ ns: n.name, key: k.key, usedBy: k.usedBy })} />
+                ))}
+              </ul>
+            )}
+          </section>
+        )
+      })}
 
       {data && data.orphans.length > 0 && (
         <section class="card sm-ns" aria-label="Secrets that templates reference but the store lacks">
-          <div class="sm-ns-bar"><h2 class="section-label sm-ns-name">Referenced by a template but not stored</h2></div>
+          <div class="sm-ns-bar"><h2 class="section-label sm-sec-name">Referenced by a template but not stored</h2></div>
           <ul class="sm-rows">
             {data.orphans.map((o) => (
               <li class="sm-row" key={o.token}>
@@ -166,7 +212,7 @@ export function Secrets({ api, notify, version }: { api: Api; notify: Notify; ve
       )}
       {data && data.problems.length > 0 && (
         <section class="card sm-ns" aria-label="Templates with a token that does not parse">
-          <div class="sm-ns-bar"><h2 class="section-label sm-ns-name">Templates with a token that does not parse</h2></div>
+          <div class="sm-ns-bar"><h2 class="section-label sm-sec-name">Templates with a token that does not parse</h2></div>
           <ul class="sm-rows">
             {data.problems.map((p, i) => (
               <li class="sm-row" key={i}><span class="chip chip--alert">Invalid</span><span class="sm-grow">{p.container} ({p.field}): {p.message}</span></li>
@@ -179,6 +225,7 @@ export function Secrets({ api, notify, version }: { api: Api; notify: Notify; ve
         <EditModal editing={editing} namespaces={data?.namespaces.map((n) => n.name) ?? []} api={api} onClose={() => setEditing(null)}
           onSaved={(d, label) => {
             setData(d); setEditing(null)
+            setExpanded((x) => ({ ...x, [editing.ns]: true }))
             setRevealed((r) => { const { [`${editing.ns}/${editing.key}`]: _g, ...rest } = r; return rest })
             notify.ok(label)
           }} />
@@ -201,7 +248,7 @@ export function Secrets({ api, notify, version }: { api: Api; notify: Notify; ve
 
 function Row(p: {
   ns: string; row: KeyRow; value?: string; usedOpen: boolean; toggleUsed: () => void
-  onReveal: () => void; onCopy: () => void; onEdit: () => void; onDelete: () => void
+  onReveal: () => void; onCopy: () => void; onCopySecret: () => void; onEdit: () => void; onDelete: () => void
 }) {
   const n = p.row.usedBy.length
   return (
@@ -217,10 +264,16 @@ function Row(p: {
         : <span class="chip">Unused</span>}
       <span class="sm-spacer" />
       <span class="sm-row-actions">
-        <button class="btn btn--secondary" type="button" onClick={p.onCopy}>Copy token</button>
+        <button class="btn btn--secondary" type="button" onClick={p.onCopy}
+          aria-label={`Copy NS+Key: copies the reference ${tokenFor(p.ns, p.row.key)}`}
+          title={`Copies the reference ${tokenFor(p.ns, p.row.key)} (not the secret value)`}>Copy NS+Key</button>
+        <button class="btn btn--secondary" type="button" onClick={p.onCopySecret}
+          aria-label={`Copy secret: copies the secret value of ${p.ns}/${p.row.key} to the clipboard`}
+          title={`Copies the actual secret value of ${p.ns}/${p.row.key} to the clipboard`}>Copy secret</button>
         <button class="btn btn--secondary" type="button" aria-pressed={p.value !== undefined} onClick={p.onReveal}>{p.value !== undefined ? 'Hide' : 'Reveal'}</button>
         <button class="btn btn--secondary" type="button" onClick={p.onEdit}>Edit</button>
-        <button class="btn btn--ghost sm-danger-text" type="button" onClick={p.onDelete}>Delete</button>
+        <button class="btn-icon sm-trash" type="button" onClick={p.onDelete}
+          aria-label={`Delete ${p.ns}/${p.row.key}`} title={`Delete ${p.ns}/${p.row.key}`}><TrashIcon /></button>
       </span>
       {p.usedOpen && n > 0 && <div class="sm-usedlist sm-note">Used by: {p.row.usedBy.join(', ')}</div>}
     </li>

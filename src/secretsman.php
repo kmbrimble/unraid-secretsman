@@ -365,16 +365,20 @@ function secretsman_store_set_unlocked(string $path, string $ns, string $key, st
 }
 
 /**
- * Namespaces and keys in natural, case-insensitive order (alpha, Beta, key2, key10).
- * A plain ksort() sorts every capital before every lowercase letter.
+ * Namespaces and keys in natural, case-insensitive order (alpha, Beta, key2, key10). A plain ksort() sorts every
+ * capital before every lowercase letter. Names are case-SENSITIVE (Immich and immich are two different namespaces),
+ * so names equal ignoring case are ordered case-sensitively as a tie-break: deterministic, whatever the insertion order.
  */
 function secretsman_sort_store(array $store): array
 {
+    $cmp = static function ($a, $b): int {
+        return strnatcasecmp((string)$a, (string)$b) ?: strcmp((string)$a, (string)$b);
+    };
     foreach ($store as &$keys) {
-        ksort($keys, SORT_NATURAL | SORT_FLAG_CASE);
+        uksort($keys, $cmp);
     }
     unset($keys);
-    ksort($store, SORT_NATURAL | SORT_FLAG_CASE);
+    uksort($store, $cmp);
     return $store;
 }
 

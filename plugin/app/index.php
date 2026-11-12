@@ -53,12 +53,17 @@ function sm_h(string $s): string
 }
 
 ?><!doctype html>
-<html lang="en" data-theme="<?= sm_h(sm_theme()) ?>">
+<html lang="en" data-theme="<?= sm_h(sm_theme()) ?>" data-server-theme="<?= sm_h(sm_theme()) ?>">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>SecretsMan</title>
+<script>
+/* Runs before the stylesheet, so a stored light/dark choice is applied before first paint (no flash). "auto" (or any
+   other value, or no storage at all) leaves the server-chosen theme from the Unraid setting in place. */
+try{var t=localStorage.getItem('secretsman-theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t)}}catch(e){}
+</script>
 <link rel="stylesheet" href="<?= sm_h(sm_asset('app.css')) ?>">
 </head>
 <body>
