@@ -58,6 +58,7 @@ describe('namespaces', () => {
     expect(rows()).toBe(0)
     const imm = byText('.sm-ns-toggle', 'Immich')!
     expect(imm.getAttribute('aria-expanded')).toBe('false')
+    expect(imm.hasAttribute('aria-controls')).toBe(false) // the list is not rendered while collapsed: no dangling reference
     expect(imm.textContent).toContain('1 secret')
     expect(imm.textContent).toContain('1 used')
     const lower = root.querySelectorAll('.sm-ns-toggle')[1]
@@ -69,6 +70,8 @@ describe('namespaces', () => {
     await mount()
     await click(root.querySelectorAll('.sm-ns-toggle')[1])
     expect(rows()).toBe(2)
+    const t = root.querySelectorAll('.sm-ns-toggle')[1]
+    expect(document.getElementById(t.getAttribute('aria-controls')!)).not.toBeNull()
     await click(byText('button', 'Expand all'))
     expect(rows()).toBe(4)
     await click(byText('button', 'Collapse all'))

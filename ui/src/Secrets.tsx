@@ -167,7 +167,7 @@ export function Secrets({ api, notify, version }: { api: Api; notify: Notify; ve
           <section class="card sm-ns" key={n.name} aria-label={`Namespace ${n.name}`}>
             <div class="sm-ns-bar">
               <h2 class="sm-ns-h">
-                <button class="sm-ns-toggle" type="button" aria-expanded={o} aria-controls={listId} onClick={() => toggleNs(n.name)}>
+                <button class="sm-ns-toggle" type="button" aria-expanded={o} aria-controls={o ? listId : undefined} onClick={() => toggleNs(n.name)}>
                   <span class="sm-chev" aria-hidden="true" />
                   <span class="sm-ns-name">{n.name}</span>
                   <span class="chip">{n.keys.length} {n.keys.length === 1 ? 'secret' : 'secrets'}</span>
