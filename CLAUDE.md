@@ -542,9 +542,12 @@ Three things stay by hand, deliberately:
   since the previous tag, the new version's CHANGES entry must contain a line starting `RECOVERY drill:` recording the
   outcome.
 
-The first real release on this layout is the final proof of the tag path. It had not happened as of 2026-11-04: the
-newest tag, `v1.0.5`, was cut on 2026-11-01 under the old write-back flow (`fe66152`), before the Gitea-primary change
-(`600882f`, 2026-11-02).
+The Gitea-primary tag path is proven: `v1.1.0` (2026-11-13) went PR, CI-printed md5, tag on Gitea, mirror, GitHub
+release workflow rebuild with the same md5, then `install-on-host.sh`. The md5 was identical from three builds (Gitea
+CI, the claude-code container, the GitHub release run), including the Node/Vite UI build.
+`scripts/install-on-host.sh` calls `gh release view` on the GitHub mirror, which the `gh` shim's forge-guard refuses
+for this repo; run it as `FORGE_GUARD=off bash scripts/install-on-host.sh <version>` (the guard's documented kill
+switch). The release assets really are on GitHub, so that is the intended use.
 
 `dist/` is gitignored: artifacts are release assets, not repo contents. `scripts/build-plugin.sh` runs locally for a
 test build (`xz` is present in the claude-code container as of 2026-11-04), but see the md5 note above.
@@ -565,12 +568,12 @@ not a separate decision. It:
 That patch check is the point. An install that lands its files but fails to patch looks identical to a good one until
 a container fails to create. A failure there is a failed release, not a flaky script.
 
-Currently released and installed on this host: **v1.0.5** (checked 2026-11-04, read-only). The flash `.plg` and
-`/var/log/plugins/unraid-secretsman.plg` both show `1.0.5`, `Helpers.php` carries 1 `SECRETSMAN-PATCH-BEGIN` marker,
-and `/etc/unraid-version` is 7.3.4. Releases before 1.0.2 were published but never installed (the host ran 2026.08.25
-until 1.0.2, for the sidecar reason in constraint 9). Do not trust `gh release list` as evidence of what is on the
-host; check `/boot/config/plugins/unraid-secretsman.plg`. The live store is `/mnt/user/appdata/.secrets/store.json`,
-`root:root 0600`.
+Currently released and installed on this host: **v1.1.0** (installed and checked 2026-11-13). The flash `.plg` shows
+`1.1.0`, `/var/log/plugins/unraid-secretsman.plg` is registered, the flash `.txz` md5 is `b2abc2b0…` (the `&md5;`),
+`Helpers.php` carries 1 `SECRETSMAN-PATCH-BEGIN` marker, and `/etc/unraid-version` is 7.3.4. Releases before 1.0.2 were
+published but never installed (the host ran 2026.08.25 until 1.0.2, for the sidecar reason in constraint 9). Do not
+trust `gh release list` as evidence of what is on the host; check `/boot/config/plugins/unraid-secretsman.plg`. The
+live store is `/mnt/user/appdata/.secrets/store.json`, `root:root 0600`.
 
 ## Code review
 
