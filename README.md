@@ -58,17 +58,23 @@ removed — see SECURITY below for why.
 ## Managing secrets
 
 A **SecretsMan** tab in the top menu bar handles the store without SSH:
-add a secret, click **Copy token** on its row, and paste the exact `!secret ns/key` string into
+add a secret, click **Copy NS+Key** on its row, and paste the exact `!secret ns/key` string into
 the template's Variable field in place of the value. A revealed value is never in the page
 source until you explicitly click Reveal on that one row; every other view only ever shows a
 length. The page also scans your saved templates and flags any `!secret` token that doesn't
 match a stored secret, or doesn't parse at all — the two mistakes that used to fail silently.
 
 The tab is a thin frame around a small web app (Preact, built with Vite, served by the webGUI itself: no
-daemon, no extra port, same login). Secrets are grouped by namespace, searchable, and sorted
-case-insensitively; each row shows its masked length, a **used by** chip for the containers whose templates
-reference it, and Copy token, Reveal, Edit and Delete. **Open full page** shows the same app in its own tab.
-The app follows the Unraid theme (black and gray are dark, white and azure are light).
+daemon, no extra port, same login). It uses the full width of the window. Secrets are grouped by namespace; every
+namespace starts collapsed and its header shows how many secrets it holds and how many are used or unused.
+**Expand all** / **Collapse all** and a search box (which opens every namespace with a match and restores your
+layout when cleared) keep a long list manageable. Names are shown exactly as stored and are case-sensitive, so
+`Immich` and `immich` are different namespaces. Each row shows its masked length, a **used by** chip for the
+containers whose templates reference it, and **Copy NS+Key** (the `!secret ns/key` reference), **Copy secret** (the
+real value, fetched from the server only at the click and never kept in the page), Reveal, Edit and a trash-can
+Delete. **Open full page** shows the same app in its own tab. An **Auto / Light / Dark** switch sets the theme: Auto
+follows the Unraid theme (black and gray are dark, white and azure are light), and a choice is remembered in the
+browser and shared by the tab and the full page.
 
 ![SecretsMan web app](docs/screenshot-settings-page.png)
 

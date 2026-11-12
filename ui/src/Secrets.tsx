@@ -223,10 +223,11 @@ export function Secrets({ api, notify, version }: { api: Api; notify: Notify; ve
 
       {editing && (
         <EditModal editing={editing} namespaces={data?.namespaces.map((n) => n.name) ?? []} api={api} onClose={() => setEditing(null)}
-          onSaved={(d, label) => {
+          onSaved={(d, label, ns, key) => {
             setData(d); setEditing(null)
-            setExpanded((x) => ({ ...x, [editing.ns]: true }))
-            setRevealed((r) => { const { [`${editing.ns}/${editing.key}`]: _g, ...rest } = r; return rest })
+            // Open the namespace the secret went into (it is what the user typed, not necessarily the one the modal opened for).
+            setExpanded((x) => ({ ...x, [ns]: true }))
+            setRevealed((r) => { const { [`${ns}/${key}`]: _g, ...rest } = r; return rest })
             notify.ok(label)
           }} />
       )}
@@ -281,7 +282,7 @@ function Row(p: {
 }
 
 function EditModal({ editing, namespaces, api, onClose, onSaved }: {
-  editing: Editing; namespaces: string[]; api: Api; onClose: () => void; onSaved: (d: ListPayload, label: string) => void
+  editing: Editing; namespaces: string[]; api: Api; onClose: () => void; onSaved: (d: ListPayload, label: string, ns: string, key: string) => void
 }) {
   const adding = editing.mode === 'add'
   const [ns, setNs] = useState(editing.ns)
@@ -302,7 +303,7 @@ function EditModal({ editing, namespaces, api, onClose, onSaved }: {
     setBusy(true); setError(null)
     try {
       const d = await api.store({ action: adding ? 'add' : 'edit', ns, key, value })
-      onSaved(d, `${adding ? 'Added' : 'Updated'} ${ns}/${key}.`)
+      onSaved(d, `${adding ? 'Added' : 'Updated'} ${ns}/${key}.`, ns, key)
     } catch (err) { setError((err as Error).message); setBusy(false) }
   }
   return (

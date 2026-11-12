@@ -16,7 +16,9 @@ code { font-family: var(--font-mono); font-size: 0.92em; overflow-wrap: anywhere
 .sm-field .input { width: 100%; }
 .sm-hint { font-size: var(--text-xs); color: var(--fg-muted); }
 .sm-err { margin: var(--space-1) 0; color: var(--status-alert); font-size: var(--text-sm); }
-.sm-ns-bar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; padding-bottom: var(--space-2); border-bottom: 1px solid var(--border); }
+.sm-ns-bar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.sm-ns > .sm-rows { margin-top: var(--space-2); border-top: 1px solid var(--border); }
+.sm-backup[open] > .sm-ns-bar { padding-bottom: var(--space-2); border-bottom: 1px solid var(--border); }
 .sm-sec-name { margin: 0; }
 .sm-ns-h { margin: 0; flex: 1 1 auto; min-width: 0; }
 .sm-ns-toggle { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); width: 100%; min-height: max(44px, 2.75rem); padding: 0; border: 0; background: none; color: var(--fg); font-family: inherit; text-align: left; cursor: pointer; }

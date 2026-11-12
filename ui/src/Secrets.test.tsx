@@ -100,6 +100,27 @@ describe('namespaces', () => {
   })
 })
 
+describe('adding', () => {
+  it('opens the namespace the secret was added to, including a brand-new one typed in the modal', async () => {
+    await mount()
+    api.store.mockImplementation(async (d: Record<string, string>) => {
+      if (d.action === 'add') {
+        const p = payload()
+        p.namespaces.push({ name: 'brandnew', keys: [{ key: 'k', length: 3, usedBy: [] }] })
+        return p
+      }
+      return payload()
+    })
+    await click(byText('button', 'Add secret'))
+    const set = (id: string, v: string) => type(document.querySelector(id) as HTMLInputElement, v)
+    await set('#sm-f-ns', 'brandnew'); await set('#sm-f-key', 'k'); await set('#sm-f-val', 'abc')
+    await click(document.querySelector('[role="dialog"] button[type="submit"]'))
+    await flush()
+    expect(byText('.sm-ns-toggle', 'brandnew')!.getAttribute('aria-expanded')).toBe('true')
+    expect(rows()).toBe(1)
+  })
+})
+
 describe('row actions', () => {
   const open = async () => { await mount(); await click(byText('button', 'Expand all')) }
 
