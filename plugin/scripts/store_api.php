@@ -2,11 +2,10 @@
 declare(strict_types=1);
 
 /**
- * secretsman — backend for SecretsMan.page. The only PHP that touches the
- * store from the GUI, and the only HTML renderer for it: the page ships an
- * empty table container and calls action=list on load, so there is exactly
- * one render path, used identically for the initial paint and every
- * post-mutation repaint. No escaping logic is duplicated in JS.
+ * secretsman — JSON backend for the SecretsMan web app (plugin/app/). The only
+ * PHP that touches the store from the GUI. It renders nothing: `list` and
+ * every mutation return the same JSON payload (see list_payload()), and the
+ * Preact app builds the DOM, escaping through the framework.
  *
  * Deliberately requires ONLY src/secretsman.php, not common.php:
  * secretsman_notify() has no reason to fire here (a GUI error goes to the
@@ -42,100 +41,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
     respond(['ok' => false, 'error' => 'secretsman: POST required']);
 }
 
-/** Escape for HTML text content — every interpolated value goes through this. */
-function h(string $s): string
-{
-    return htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
-}
-
 /**
- * The one renderer. $store is the full (possibly empty) secret store;
- * usage/problems come from secretsman_scan_templates(). Never receives or
- * emits a plaintext secret value — only a length, never a fragment.
+ * The list payload: namespaces -> keys -> value LENGTH and the containers whose saved templates reference it, plus
+ * tokens templates use that are not in the store (orphans) and tokens that do not parse (problems). Never a value,
+ * never a fragment of one: the only response that carries a value is `reveal`, for one named key.
  */
-function render_store_html(array $store, array $scan): string
-{
-    ksort($store);
-    $flatKeys = [];
-    foreach ($store as $ns => $keys) {
-        foreach (array_keys($keys) as $k) {
-            $flatKeys["{$ns}/{$k}"] = true;
-        }
-    }
-
-    $html = '';
-
-    if ($store === []) {
-        $html .= '<p class="notice">No secrets stored yet. Use the form above to add your first one'
-            . ' — namespace, key, and the value you want to protect.</p>';
-    } else {
-        $html .= '<div class="TableContainer"><table class="unraid secretsman shift" style="width:100%">';
-        $html .= '<thead><tr><th style="text-align:left">In use</th><th style="text-align:left">Used by</th>'
-            . '<th style="text-align:left">Key</th><th style="text-align:left">Value</th>'
-            . '<th style="text-align:right">Actions</th></tr></thead><tbody>';
-        foreach ($store as $ns => $keys) {
-            ksort($keys);
-            $html .= '<tr class="secretsman-ns"><td colspan="5" style="font-weight:bold;background:rgba(128,128,128,0.15);padding-top:0.5em">'
-                . h($ns) . '</td></tr>';
-            foreach ($keys as $key => $value) {
-                $usedBy = $scan['usage']["{$ns}/{$key}"] ?? [];
-                $inUse = $usedBy
-                    ? '<span style="color:#2a2" title="Referenced by a saved template">&#10004;</span>'
-                    : '<span style="color:#c33" title="Not referenced by any saved template">&#10008;</span>';
-                $usedByText = $usedBy ? h(implode(', ', $usedBy)) : '&#8212;';
-                $len = strlen($value);
-                $nsAttr = h($ns);
-                $keyAttr = h($key);
-                $html .= '<tr data-ns="' . $nsAttr . '" data-key="' . $keyAttr . '">';
-                $html .= '<td>' . $inUse . '</td>';
-                $html .= '<td>' . $usedByText . '</td>';
-                $html .= '<td>' . h($key) . '</td>';
-                $html .= '<td class="sm-value" data-len="' . $len . '" style="word-break:break-all;max-width:20em">'
-                    . '<span class="sm-mask">' . str_repeat('&#8226;', 8) . ' (' . $len . ' chars)</span>'
-                    . '</td>';
-                $html .= '<td class="sm-actions" style="text-align:right;white-space:nowrap">'
-                    . '<button class="sm-reveal" type="button">Reveal</button> '
-                    . '<button class="sm-copy" type="button">Copy token</button> '
-                    . '<button class="sm-edit" type="button">Edit</button> '
-                    . '<button class="sm-delete" type="button">Delete</button>'
-                    . '</td>';
-                $html .= '</tr>';
-            }
-        }
-        $html .= '</tbody></table></div>';
-    }
-
-    if ($scan['usage']) {
-        $orphans = [];
-        foreach ($scan['usage'] as $token => $containers) {
-            if (!isset($flatKeys[$token])) {
-                $orphans[$token] = $containers;
-            }
-        }
-        if ($orphans) {
-            $html .= '<h4>Templates referencing a secret that is not in the store</h4><ul class="sm-orphans">';
-            foreach ($orphans as $token => $containers) {
-                [$ns, $key] = explode('/', $token, 2);
-                $html .= '<li><code>!secret ' . h($token) . '</code> — used by ' . h(implode(', ', $containers))
-                    . '. Creating or updating ' . (count($containers) > 1 ? 'these containers' : 'this container')
-                    . ' will fail until it is added.'
-                    . ' <button class="sm-add-orphan" type="button" data-ns="' . h($ns) . '" data-key="' . h($key) . '">Add</button></li>';
-            }
-            $html .= '</ul>';
-        }
-    }
-
-    if ($scan['problems']) {
-        $html .= '<h4>Templates with a token that does not parse</h4><ul class="sm-problems">';
-        foreach ($scan['problems'] as $p) {
-            $html .= '<li>' . h($p['container']) . ' (' . h($p['field']) . '): ' . h($p['message']) . '</li>';
-        }
-        $html .= '</ul>';
-    }
-
-    return $html;
-}
-
 function list_payload(string $storePath): array
 {
     if (!is_file($storePath)) {
@@ -147,9 +57,36 @@ function list_payload(string $storePath): array
             return ['ok' => false, 'error' => $e->getMessage()];
         }
     }
+    $store = secretsman_sort_store($store);
+    $scan = secretsman_scan_templates(templates_dir());
 
-    $scan = secretsman_scan_templates(TEMPLATES_DIR);
-    return ['ok' => true, 'html' => render_store_html($store, $scan)];
+    $namespaces = [];
+    $known = [];
+    foreach ($store as $ns => $keys) {
+        $rows = [];
+        foreach ($keys as $key => $value) {
+            $known["{$ns}/{$key}"] = true;
+            $len = function_exists('mb_strlen') ? mb_strlen($value, 'UTF-8') : strlen($value);
+            $rows[] = ['key' => (string)$key, 'length' => $len, 'usedBy' => array_values($scan['usage']["{$ns}/{$key}"] ?? [])];
+        }
+        $namespaces[] = ['name' => (string)$ns, 'keys' => $rows];
+    }
+
+    $orphans = [];
+    foreach ($scan['usage'] as $token => $containers) {
+        if (!isset($known[$token])) {
+            [$ns, $key] = explode('/', $token, 2);
+            $orphans[] = ['token' => $token, 'ns' => $ns, 'key' => $key, 'usedBy' => array_values($containers)];
+        }
+    }
+
+    return ['ok' => true, 'namespaces' => $namespaces, 'orphans' => $orphans, 'problems' => $scan['problems']];
+}
+
+function templates_dir(): string
+{
+    $override = getenv('SECRETSMAN_TEMPLATES_DIR');
+    return $override !== false && $override !== '' ? $override : TEMPLATES_DIR;
 }
 
 $storePath = secretsman_default_store_path();

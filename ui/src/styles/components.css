@@ -1,0 +1,188 @@
+/* vendored from kmbrimble/design-system@b6c9faf — do not edit, change upstream */
+/* Kiztigs Design System — components. Requires tokens.css (+ base.css). Tokens only. */
+
+/* ---- Buttons --------------------------------------------------------------------
+ * 44px floor via max(44px, 2.75rem): a plain rem shrinks with a small-font setting,
+ * the px floor does not. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: max(44px, 2.75rem);
+  min-width: max(44px, 2.75rem);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: var(--text-base);
+  font-family: inherit;
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease), border-color var(--duration-fast) var(--ease),
+    box-shadow var(--duration-fast) var(--ease);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* The one accent-filled action per view. White on the gradient (both stops pass 4.5:1). */
+.btn--primary {
+  font-weight: var(--weight-semibold);
+  background: var(--gradient-primary);
+  color: #fff;
+  border: none;
+  box-shadow: var(--shadow-2);
+}
+
+.btn--secondary {
+  background: var(--surface);
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+
+.btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--fg);
+}
+
+/* Circular icon-only button. Always give it an aria-label. */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: max(44px, 2.75rem);
+  height: max(44px, 2.75rem);
+  padding: 0;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+/* ---- Cards ----------------------------------------------------------------------- */
+.card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4) var(--space-5);
+  box-shadow: var(--shadow-2);
+}
+
+/* The current/active item: stronger shadow, 1px accent ring, soft accent glow.
+ * The glow is the literal violet rgb(124 58 237) from where-to-next in both schemes. */
+.card--current {
+  box-shadow: var(--shadow-3), 0 0 0 1px var(--accent), 0 0 20px rgb(124 58 237 / 0.18);
+}
+
+/* ---- Pill: small uppercase gradient label ("NOW") ------------------------------------ */
+.pill {
+  display: inline-block;
+  padding: 0.1rem var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--gradient-primary);
+  color: #fff;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* ---- Chip: status tag. Tint background + status-coloured text. ------------------------ */
+.chip {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  background: var(--surface-2);
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+}
+
+.chip--ok {
+  background: var(--status-ok-tint);
+  color: var(--status-ok);
+}
+
+.chip--warn {
+  background: var(--status-warn-tint);
+  color: var(--status-warn);
+}
+
+.chip--alert {
+  background: var(--status-alert-tint);
+  color: var(--status-alert);
+}
+
+/* ---- Input ----------------------------------------------------------------------- */
+.input {
+  min-height: max(44px, 2.75rem);
+  padding: 0 var(--space-3);
+  font-size: var(--text-base);
+  font-family: inherit;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--fg);
+}
+
+.input:focus-visible {
+  border-color: var(--accent);
+}
+
+/* ---- Section label: small, uppercase, muted. Chrome, not a headline. ------------------ */
+.section-label {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+/* ---- Modal ----------------------------------------------------------------------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: var(--space-4);
+}
+
+.modal {
+  background: var(--surface);
+  /* Explicit so a modal inside a tinted/filled region doesn't inherit its text colour. */
+  color: var(--fg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+  padding: var(--space-4);
+  max-width: 24rem;
+  width: 100%;
+  max-height: 80dvh;
+  overflow-y: auto;
+}
+
+/* ---- Dashed divider (the leg-connector line between items) ------------------------- */
+.divider-dashed {
+  width: 0;
+  height: 1.1rem;
+  margin-inline: auto;
+  border-left: 2px dashed var(--border-strong);
+}
+
+.divider-dashed--current {
+  border-left-color: var(--accent);
+}

@@ -1,0 +1,36 @@
+/* vendored from kmbrimble/design-system@b6c9faf — do not edit, change upstream */
+/* Kiztigs Design System — base. Requires tokens.css. No @import. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:root {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums; /* times/numbers line up in columns */
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+}
+
+/* Never a hover-only affordance: keyboard/touch focus gets a visible ring. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
