@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
-import { ApiError, backupFileToBase64, formatBytes, formatTime, type BackupPayload } from './lib'
-import { Field, Modal, ShowToggle } from './ui'
+import { ApiError, backupFileToBase64, formatBytes, formatTime, type BackupPayload, type BrowsePayload } from './lib'
+import { Field, FolderPicker, Modal, ShowToggle } from './ui'
 import type { Api, Notify } from './App'
 
 const DOWNLOAD_URL = '../scripts/backup_download.php'
@@ -19,6 +19,7 @@ export function Backup({ api, notify, onRestored }: { api: Api; notify: Notify; 
   const [loadError, setLoadError] = useState<string | null>(null)
   const [showPw, setShowPw] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
+  const [picking, setPicking] = useState(false)
 
   const [selected, setSelected] = useState('')
   const [file, setFile] = useState<File | null>(null)
@@ -100,7 +101,10 @@ export function Backup({ api, notify, onRestored }: { api: Api; notify: Notify; 
           </p>
           <div class="sm-grid">
             <Field label="Destination folder" id="bk-dest">
-              <input id="bk-dest" class="input" value={form.destination} placeholder="/mnt/user/backups/secretsman" onInput={set('destination')} />
+              <div class="sm-inline">
+                <input id="bk-dest" class="input sm-grow" value={form.destination} placeholder="/mnt/user/backups/secretsman" onInput={set('destination')} />
+                <button class="btn btn--secondary" type="button" onClick={() => setPicking(true)}>Browse&hellip;</button>
+              </div>
             </Field>
             <Field label="Schedule" id="bk-mode">
               <div class="sm-inline">
@@ -180,6 +184,11 @@ export function Backup({ api, notify, onRestored }: { api: Api; notify: Notify; 
             <button class="btn btn--secondary" type="button" disabled={busy !== null} onClick={startRestore}>Restore&hellip;</button>
           </div>
         </div>
+      )}
+      {picking && form && (
+        <FolderPicker start={form.destination} onClose={() => setPicking(false)}
+          browse={(dir) => api.backup<BrowsePayload>({ action: 'browse', dir })}
+          onPick={(path) => { setForm({ ...form, destination: path }); setPicking(false) }} />
       )}
       {confirming && (
         <Modal title="Restore from archive?" onClose={() => setConfirming(false)}>

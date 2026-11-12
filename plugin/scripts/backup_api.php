@@ -96,6 +96,14 @@ try {
         case 'list':
             respond(config_payload());
 
+        case 'browse':
+            // Folder picker for the destination field. Confined to /mnt and /boot; see secretsman_backup_browse().
+            $rootsEnv = getenv('SECRETSMAN_BROWSE_ROOTS');
+            $roots = $rootsEnv !== false && $rootsEnv !== '' ? explode(':', $rootsEnv) : ['/mnt', '/boot'];
+            $dir = (string)($_POST['dir'] ?? '');
+            $listing = secretsman_backup_browse($dir === '' ? $roots[0] : $dir, $roots);
+            respond(['ok' => true, 'roots' => $roots] + $listing);
+
         case 'config_set':
             $config = secretsman_backup_config_load();
             $config['destination'] = trim((string)($_POST['destination'] ?? ''));

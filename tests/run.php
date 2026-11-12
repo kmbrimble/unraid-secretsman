@@ -2018,6 +2018,47 @@ t('web: backup_download.php streams the newest archive and reports none when the
 });
 
 
+t('browse: lists only subdirectories, sorted case-insensitively, hides dot-dirs, and reports parent', function () {
+    $dir = scratch_dir();
+    foreach (['beta', 'Alpha', '.hidden', 'gamma'] as $d) mkdir("$dir/$d");
+    file_put_contents("$dir/file.txt", 'x');
+    $r = secretsman_backup_browse("$dir", [$dir]);
+    assert_eq(realpath($dir), $r['path']);
+    assert_eq(['Alpha', 'beta', 'gamma'], $r['dirs']);
+    assert_eq(null, $r['parent'], 'at a root there is no parent to go up to');
+    $r2 = secretsman_backup_browse("$dir/beta", [$dir]);
+    assert_eq(realpath($dir), $r2['parent']);
+});
+
+t('browse: refuses anything outside the allowed roots, including dot-dot and symlink escapes', function () {
+    $dir = scratch_dir();
+    $root = "$dir/root";
+    mkdir($root);
+    mkdir("$dir/outside");
+    symlink("$dir/outside", "$root/link");
+    foreach (["$root/../outside", "$root/link", '/etc', "$dir/outside"] as $bad) {
+        $threw = false;
+        try { secretsman_backup_browse($bad, [$root]); } catch (SecretsmanError $e) { $threw = true; }
+        assert_true($threw, "should refuse $bad");
+    }
+    $threw = false;
+    try { secretsman_backup_browse("$root/nope", [$root]); } catch (SecretsmanError $e) { $threw = true; }
+    assert_true($threw, 'a missing directory is an error, not an empty listing');
+});
+
+t('web: backup_api.php browse returns JSON dirs confined to the configured roots', function () {
+    $dir = scratch_dir();
+    mkdir("$dir/root"); mkdir("$dir/root/one"); mkdir("$dir/elsewhere");
+    $env = backup_env($dir) + ['SECRETSMAN_BROWSE_ROOTS' => "$dir/root"];
+    $ok = with_env($env, fn() => run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', ['action' => 'browse', 'dir' => "$dir/root"]));
+    assert_eq(true, $ok['ok']);
+    assert_eq(['one'], $ok['dirs']);
+    $bad = with_env($env, fn() => run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', ['action' => 'browse', 'dir' => "$dir/elsewhere"]));
+    assert_eq(false, $bad['ok']);
+    $def = with_env($env, fn() => run_web_script(__DIR__ . '/../plugin/scripts/backup_api.php', ['action' => 'browse']));
+    assert_eq(true, $def['ok'], 'no dir means the first root');
+});
+
 t('runner: the summary counts skips, and a skip fails the run only under CI', function () {
     assert_eq(['3 passed, 0 failed, 0 skipped', true], runner_summary(3, 0, 0, false));
     assert_eq(['3 passed, 0 failed, 0 skipped', true], runner_summary(3, 0, 0, true));

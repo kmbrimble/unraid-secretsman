@@ -110,3 +110,17 @@ export interface BackupPayload {
   message?: string
   restored?: { added?: string[]; collisions?: string[]; removed?: string[]; mode?: string }
 }
+
+export interface BrowsePayload { ok: true; roots: string[]; path: string; parent: string | null; dirs: string[] }
+
+/** Breadcrumb segments for the folder picker: [{label, path}], starting at the root that contains `path`. */
+export function crumbs(path: string, roots: string[]): { label: string; path: string }[] {
+  const root = roots.find((r) => path === r || path.startsWith(r.replace(/\/$/, '') + '/')) ?? roots[0] ?? '/'
+  const out = [{ label: root, path: root }]
+  let acc = root.replace(/\/$/, '')
+  for (const seg of path.slice(root.length).split('/').filter(Boolean)) {
+    acc += '/' + seg
+    out.push({ label: seg, path: acc })
+  }
+  return out
+}

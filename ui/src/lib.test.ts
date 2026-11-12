@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { nameError, tokenFor, formatBytes, backupFileToBase64, postJson, ApiError } from './lib'
+import { crumbs, nameError, tokenFor, formatBytes, backupFileToBase64, postJson, ApiError } from './lib'
 
 describe('nameError', () => {
   it('accepts letters, digits, underscore, dot and dash', () => {
@@ -58,5 +58,15 @@ describe('backupFileToBase64', () => {
   it('encodes bytes without a data-URL prefix', async () => {
     const file = new File([new Uint8Array([104, 105])], 'a.bin')
     expect(await backupFileToBase64(file)).toBe('aGk=')
+  })
+})
+
+describe('crumbs', () => {
+  it('starts at the containing root and adds one crumb per folder', () => {
+    expect(crumbs('/mnt/user/backups/sm', ['/mnt', '/boot'])).toEqual([
+      { label: '/mnt', path: '/mnt' }, { label: 'user', path: '/mnt/user' },
+      { label: 'backups', path: '/mnt/user/backups' }, { label: 'sm', path: '/mnt/user/backups/sm' },
+    ])
+    expect(crumbs('/boot', ['/mnt', '/boot'])).toEqual([{ label: '/boot', path: '/boot' }])
   })
 })
