@@ -256,6 +256,18 @@ comma produced a blank Docker "Update Container" page with no visible error.
 - UI follows DESIGN.md (house design system, vendored in `ui/src/styles/`). No colour, spacing, radius or shadow
   values outside the vendored `tokens.css`; changes go upstream to kmbrimble/design-system and are re-vendored.
   `npm run check:contrast` in `ui/` runs the contrast check against the vendored tokens.
+- **Namespaces and keys are case-sensitive** (exact-match lookup in `src/secretsman.php`): `Immich` and `immich` are two
+  namespaces and the UI shows them as two sections, in their stored case (the vendored `.section-label` uppercases, so
+  namespace names use `.sm-ns-name`, not that class). `secretsman_sort_store()` is natural case-insensitive with a
+  case-sensitive tie-break, so the order is deterministic. Never merge or normalise case.
+- Namespaces start collapsed. While a search is active the matching ones are open via a separate `searchOpen` map, so
+  clearing the search restores the user's own `expanded` state.
+- **Copy secret** goes through the same `reveal` request as Reveal: one named value per explicit click, held only in a
+  local variable and a transient off-screen textarea (`copyText()`, `execCommand`, because the webGUI is plain http
+  and `navigator.clipboard` is unavailable), never in state, the DOM or a toast. A component test guards this.
+- The theme choice (`auto|light|dark`) lives in `localStorage` key `secretsman-theme`, shared by the iframe and the
+  standalone page. `app/index.php` applies a stored light/dark choice in an inline script before the stylesheet (no
+  flash) and exposes the Unraid-derived theme as `data-server-theme` for "auto".
 - `plugin/scripts/store_api.php` and `backup_api.php` render no HTML any more: `list` and every mutation return one JSON
   payload (namespaces, keys with value LENGTH and `usedBy`, orphans, problems; backup config, `passwordSet`,
   archives, `lastRun`). Ordering is natural and case-insensitive (`secretsman_sort_store()`); a plain `ksort()`
@@ -658,8 +670,9 @@ Thin or absent:
   non-reveal response), `backup_api.php` (`list` shape, `config_set`, `backup_now` failure, restore traversal,
   invalid base64, oversized POST), `backup_download.php`, and `app/index.php` (token, theme, escaping). Still not
   covered at dispatcher level: a successful `backup_now` and a successful `restore` through `backup_api.php`.
-- **The browser UI has Vitest unit tests (`ui/src/lib.test.ts`: validation, transport, error mapping) and no
-  component tests.** The click-through (add, copy, reveal, edit, delete) is a headless-Chromium script run by hand
+- **The browser UI has Vitest unit tests (`ui/src/lib.test.ts`, `theme.test.ts`: validation, transport, error mapping,
+  theme) and component tests (`Secrets.test.tsx`: collapse/expand, search restore, Copy NS+Key / Copy secret,
+  delete icon, theme switch, add-opens-namespace), run in CI.** The click-through (add, copy, reveal, edit, delete) is a headless-Chromium script run by hand
   against the live host, not in CI.
 - **The suite cannot catch a php-fpm-only defect** — it runs exclusively under CLI, where
   `STDOUT`/`STDERR`/`$argv` are all defined. This is rule 8, and it has already bitten three

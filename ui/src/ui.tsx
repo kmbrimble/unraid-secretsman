@@ -1,6 +1,6 @@
 import type { ComponentChildren } from 'preact'
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { crumbs, type BrowsePayload } from './lib'
+import { applyTheme, crumbs, readThemePref, saveThemePref, THEME_KEY, type BrowsePayload, type ThemePref } from './lib'
 
 export interface Toast { id: number; kind: 'ok' | 'alert'; text: string }
 
@@ -120,5 +120,39 @@ export function FolderPicker({ start, browse, onPick, onClose }: {
         <button class="btn btn--primary" type="button" disabled={!data} onClick={() => data && onPick(data.path)}>Use this folder</button>
       </div>
     </Modal>
+  )
+}
+
+export function TrashIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+      stroke-linejoin="round" aria-hidden="true" focusable="false">
+      <path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M6 6l1 14h10l1-14" /><path d="M10 11v6" /><path d="M14 11v6" />
+    </svg>
+  )
+}
+
+const THEMES: { pref: ThemePref; label: string }[] = [{ pref: 'auto', label: 'Auto' }, { pref: 'light', label: 'Light' }, { pref: 'dark', label: 'Dark' }]
+
+/** Auto follows the Unraid theme (the default). The choice is kept in localStorage, shared by the tab's iframe and the standalone page. */
+export function ThemeSwitch() {
+  const [pref, setPref] = useState<ThemePref>(() => readThemePref())
+  useEffect(() => { applyTheme(pref) }, [pref])
+  useEffect(() => {
+    // The other copy of the app (iframe vs standalone) changed the choice: follow it.
+    const onStorage = (e: StorageEvent) => { if (e.key === THEME_KEY) setPref(readThemePref()) }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+  const choose = (p: ThemePref) => { saveThemePref(p); setPref(p) }
+  return (
+    <div class="sm-theme" role="group" aria-label="Theme">
+      {THEMES.map((t) => (
+        <button key={t.pref} type="button" class="btn btn--ghost sm-theme-btn" aria-pressed={pref === t.pref}
+          title={t.pref === 'auto' ? 'Follow the Unraid theme' : `Always ${t.label.toLowerCase()}`} onClick={() => choose(t.pref)}>
+          {t.label}
+        </button>
+      ))}
+    </div>
   )
 }

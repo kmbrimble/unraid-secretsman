@@ -76,12 +76,16 @@ export async function copyText(text: string): Promise<boolean> {
   } catch {
     /* fall through to the legacy path */
   }
+  const prevFocus = document.activeElement as HTMLElement | null
   const ta = document.createElement('textarea')
   ta.value = text
   ta.setAttribute('readonly', '')
   ta.style.position = 'fixed'
+  ta.style.left = '-9999px'
+  ta.style.top = '0'
   ta.style.opacity = '0'
   document.body.appendChild(ta)
+  ta.focus({ preventScroll: true })
   ta.select()
   let ok = false
   try {
@@ -90,6 +94,7 @@ export async function copyText(text: string): Promise<boolean> {
     ok = false
   }
   ta.remove()
+  prevFocus?.focus?.({ preventScroll: true }) // the textarea took focus: give it back so keyboard users keep their place
   return ok
 }
 
@@ -124,4 +129,37 @@ export function crumbs(path: string, roots: string[]): { label: string; path: st
     out.push({ label: seg, path: acc })
   }
   return out
+}
+
+export type ThemePref = 'auto' | 'light' | 'dark'
+export const THEME_KEY = 'secretsman-theme'
+
+export const parseThemePref = (raw: string | null | undefined): ThemePref => (raw === 'light' || raw === 'dark' ? raw : 'auto')
+
+/** localStorage can throw (blocked storage, private mode): any failure means "auto". */
+export function readThemePref(storage: Pick<Storage, 'getItem'> = localStorage): ThemePref {
+  try {
+    return parseThemePref(storage.getItem(THEME_KEY))
+  } catch {
+    return 'auto'
+  }
+}
+
+export function saveThemePref(pref: ThemePref, storage: Pick<Storage, 'setItem'> = localStorage): boolean {
+  try {
+    storage.setItem(THEME_KEY, pref)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** auto = the theme the server derived from the Unraid setting (data-server-theme); light/dark override it. */
+export function applyTheme(pref: ThemePref, root: HTMLElement = document.documentElement): void {
+  root.setAttribute('data-theme', pref === 'auto' ? (root.dataset.serverTheme === 'dark' ? 'dark' : 'light') : pref)
+}
+
+export const nsSummary = (keys: KeyRow[]): { used: number; unused: number } => {
+  const used = keys.filter((k) => k.usedBy.length > 0).length
+  return { used, unused: keys.length - used }
 }

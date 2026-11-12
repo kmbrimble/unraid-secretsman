@@ -1,5 +1,5 @@
 /* SecretsMan app layout. Tokens only: every colour, space, radius and shadow comes from styles/tokens.css. */
-.sm-wrap { max-width: 64rem; margin: 0 auto; padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
+.sm-wrap { width: 100%; padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
 .sm-boot, .sm-note { color: var(--fg-muted); font-size: var(--text-sm); margin: 0; }
 .sm-head, .sm-ns, .sm-block { padding: var(--space-4); box-shadow: var(--shadow-2); }
 .sm-head-top { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; }
@@ -16,8 +16,24 @@ code { font-family: var(--font-mono); font-size: 0.92em; overflow-wrap: anywhere
 .sm-field .input { width: 100%; }
 .sm-hint { font-size: var(--text-xs); color: var(--fg-muted); }
 .sm-err { margin: var(--space-1) 0; color: var(--status-alert); font-size: var(--text-sm); }
-.sm-ns-bar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; padding-bottom: var(--space-2); border-bottom: 1px solid var(--border); }
-.sm-ns-name { margin: 0; }
+.sm-ns-bar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.sm-ns > .sm-rows { margin-top: var(--space-2); border-top: 1px solid var(--border); }
+.sm-backup[open] > .sm-ns-bar { padding-bottom: var(--space-2); border-bottom: 1px solid var(--border); }
+.sm-sec-name { margin: 0; }
+.sm-ns-h { margin: 0; flex: 1 1 auto; min-width: 0; }
+.sm-ns-toggle { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); width: 100%; min-height: max(44px, 2.75rem); padding: 0; border: 0; background: none; color: var(--fg); font-family: inherit; text-align: left; cursor: pointer; }
+.sm-ns-name { font-size: var(--text-lg); font-weight: var(--weight-semibold); overflow-wrap: anywhere; }
+.sm-chev { flex: none; width: 0.5rem; height: 0.5rem; margin: 0 var(--space-1) 0 var(--space-1); border-right: 2px solid var(--fg-muted); border-bottom: 2px solid var(--fg-muted); transform: rotate(-45deg); transition: transform var(--duration-fast) var(--ease); }
+[aria-expanded='true'] > .sm-chev { transform: rotate(45deg); }
+.sm-small { font-size: var(--text-sm); padding: var(--space-1) var(--space-3); }
+.sm-head-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.sm-theme { display: inline-flex; align-items: center; border: 1px solid var(--border-strong); border-radius: var(--radius-full); padding: 0 var(--space-1); }
+.sm-theme-btn { font-size: var(--text-sm); padding: var(--space-1) var(--space-3); }
+.sm-theme-btn[aria-pressed='true'] { background: var(--surface-2); border-color: var(--accent); box-shadow: none; font-weight: var(--weight-semibold); }
+.sm-toolbar { margin-top: var(--space-3); display: flex; align-items: flex-end; gap: var(--space-3); flex-wrap: wrap; }
+.sm-toolbar .sm-search { flex: 1 1 16rem; margin-top: 0; }
+.sm-toolbar-btns { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.sm-trash { border-color: var(--status-alert); color: var(--status-alert); }
 .sm-spacer { flex: 1 1 0; }
 .sm-grow { flex: 1 1 8rem; min-width: 0; }
 .sm-rows { list-style: none; margin: 0; padding: 0; }

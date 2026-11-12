@@ -2080,6 +2080,39 @@ t('web: backup_api.php config_set rejects out-of-range schedule values and saves
     assert_true(!is_file("$dir/backup-config.json"), 'a rejected save must not write the config');
 });
 
+t('sort: names equal ignoring case keep a stable, deterministic order whatever the insertion order (case-sensitive tie-break)', function () {
+    $a = secretsman_sort_store(['immich' => ['x' => '1'], 'Immich' => ['x' => '2'], 'Alpha' => ['x' => '3']]);
+    $b = secretsman_sort_store(['Alpha' => ['x' => '3'], 'Immich' => ['x' => '2'], 'immich' => ['x' => '1']]);
+    assert_eq(['Alpha', 'Immich', 'immich'], array_keys($a));
+    assert_eq(array_keys($a), array_keys($b));
+    $k = secretsman_sort_store(['n' => ['key' => '1', 'Key' => '2', 'KEY' => '3', 'a' => '4']]);
+    assert_eq(['a', 'KEY', 'Key', 'key'], array_keys($k['n']));
+});
+
+t('web: store_api.php list keeps namespaces that differ only by case as two distinct sections, names in their real case', function () {
+    $dir = scratch_dir();
+    $storePath = write_store($dir, ['immich' => ['db' => 'lower-value-1'], 'Immich' => ['db' => 'upper-value-2']]);
+    $resp = store_api(['action' => 'list'], $storePath);
+    assert_eq(['Immich', 'immich'], array_column($resp['namespaces'], 'name'));
+    assert_eq(13, $resp['namespaces'][0]['keys'][0]['length']);
+    assert_true(!str_contains(json_encode($resp), 'value-'), 'no value in the list');
+    $rev = store_api(['action' => 'reveal', 'ns' => 'Immich', 'key' => 'db'], $storePath);
+    assert_eq('upper-value-2', $rev['value'], 'lookup is exact-match: Immich is not immich');
+    $rev = store_api(['action' => 'reveal', 'ns' => 'immich', 'key' => 'db'], $storePath);
+    assert_eq('lower-value-1', $rev['value']);
+});
+
+t('web: app/index.php applies a stored theme choice before first paint and exposes the server theme for "auto"', function () {
+    $dir = scratch_dir();
+    file_put_contents("$dir/var.ini", "csrf_token=\"T\"\n");
+    $html = run_page_script(__DIR__ . '/../plugin/app/index.php', ['SECRETSMAN_VAR_INI' => "$dir/var.ini", 'SECRETSMAN_DYNAMIX_CFG' => theme_cfg($dir, 'black')]);
+    assert_true(str_contains($html, 'data-server-theme="dark"'), 'server theme exposed for auto');
+    $script = strpos($html, 'secretsman-theme');
+    $sheet = strpos($html, 'rel="stylesheet"');
+    assert_true($script !== false && $sheet !== false && $script < $sheet, 'theme script must run before the stylesheet so there is no flash');
+    assert_true(str_contains($html, 'try{') || str_contains($html, 'try {'), 'localStorage access is wrapped in try/catch');
+});
+
 t('runner: the summary counts skips, and a skip fails the run only under CI', function () {
     assert_eq(['3 passed, 0 failed, 0 skipped', true], runner_summary(3, 0, 0, false));
     assert_eq(['3 passed, 0 failed, 0 skipped', true], runner_summary(3, 0, 0, true));

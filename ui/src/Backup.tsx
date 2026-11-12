@@ -84,7 +84,7 @@ export function Backup({ api, notify, onRestored }: { api: Api; notify: Notify; 
   return (
     <details class="card sm-ns sm-backup">
       <summary class="sm-ns-bar sm-summary">
-        <h2 class="section-label sm-ns-name">Backup &amp; Restore</h2>
+        <h2 class="section-label sm-sec-name">Backup &amp; Restore</h2>
         {data && (data.lastRun
           ? <span class={`chip ${data.lastRun.ok ? 'chip--ok' : 'chip--alert'}`}>{data.lastRun.ok ? 'Last backup OK' : 'Last backup FAILED'}</span>
           : <span class="chip chip--warn">No backup yet</span>)}
