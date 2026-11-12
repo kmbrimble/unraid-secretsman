@@ -6,8 +6,9 @@ Central secret storage for Unraid Docker templates. See `README.md` for what thi
 this file is the design record and phase roadmap for whoever (human or Claude) picks this up
 next.
 
-Stack: plain PHP (targets 8.1 and 8.4), no framework, no Composer, no dependencies beyond what
-Unraid already ships. `src/` is the resolver/patch/backup library; `plugin/` is the tree as
+Stack: plain PHP (targets 8.1 and 8.4), no framework, no Composer, no runtime dependencies beyond what
+Unraid already ships. The web UI in `ui/` (Preact, Vite, TypeScript) is built at package time; the shipped plugin
+carries only its static output. `src/` is the resolver/patch/backup library; `plugin/` is the tree as
 installed at `/usr/local/emhttp/plugins/unraid-secretsman/` (`plugin/src` and `plugin/reference`
 are symlinks back to the top level — see "Repo layout note"); `tests/` is a hand-rolled assert
 runner plus an on-host render harness. Ships as a self-hosted `.plg` + `.txz`.
@@ -322,13 +323,15 @@ appdata-backup tooling skips it.
 - **Restore transport:** the uploaded archive goes as a base64 field (`archive_b64`) in a normal urlencoded POST.
   The size ceiling is `secretsman_backup_upload_limit_bytes()` in `src/backup.php`. See the nginx STANDING NOTE
   below.
-- Client-side fixes that must stay:
-  - `doRestore()` repaints with `refreshTableOnly()`, which never touches the banner. Otherwise a concurrent refresh
-    wipes the result message.
-  - There is a 400 ms delay between the confirm `swal()` and restore starting (the SweetAlert v1 chained-popup
-    no-op).
-  - `banner()` uses `swal()` success/error types, with an `alert()` fallback, instead of the stock `.notice`.
-  - The Destination field's Browse button sits in an inline-flex wrapper (the stock `width:100%` override).
+- **Client-side behaviours that must stay** (they replace the old jQuery page's `refreshTableOnly()`/`swal()`
+  workarounds, which no longer exist):
+  - Results are toasts with a word (Success/Error). Backup-now and restore results stay until dismissed, and a
+    background reload never clears a toast. The backup settings form is seeded only by the first load, so a later
+    payload never overwrites what the user is typing.
+  - After a restore the secrets list reloads and revealed values from before it are dropped.
+  - The destination field has a folder picker: the `browse` action of `backup_api.php`, confined to `/mnt` and `/boot`
+    by `secretsman_backup_browse()` (realpath first, so `..` and symlinks cannot escape; directories only). Typing a
+    path still works.
 
 ## Standing notes
 
@@ -556,7 +559,7 @@ Three things stay by hand, deliberately:
 
 The Gitea-primary tag path is proven: `v1.1.0` (2026-11-13) went PR, CI-printed md5, tag on Gitea, mirror, GitHub
 release workflow rebuild with the same md5, then `install-on-host.sh`. The md5 was identical from three builds (Gitea
-CI, the claude-code container, the GitHub release run), including the Node/Vite UI build.
+CI, the claude-code container, the GitHub release run), including the Node/Vite UI build, again for `v1.1.1`.
 `scripts/install-on-host.sh` calls `gh release view` on the GitHub mirror, which the `gh` shim's forge-guard refuses
 for this repo; run it as `FORGE_GUARD=off bash scripts/install-on-host.sh <version>` (the guard's documented kill
 switch). The release assets really are on GitHub, so that is the intended use.
@@ -564,7 +567,7 @@ switch). The release assets really are on GitHub, so that is the intended use.
 `dist/` is gitignored: artifacts are release assets, not repo contents. `scripts/build-plugin.sh` runs locally for a
 test build (`xz` is present in the claude-code container as of 2026-11-04), but see the md5 note above.
 
-Gitea CI (`.gitea/workflows/ci.yml`) runs `php -l` and `php tests/run.php` on PHP 8.4 and 8.1 on every push and PR. The
+Gitea CI (`.gitea/workflows/ci.yml`) runs `php -l`, the UI unit/component tests and contrast check (`ui/`, Node pinned to `22.23.4`), and `php tests/run.php` on PHP 8.4 and 8.1 on every push and PR. The
 GitHub release workflow repeats those checks rather than trusting a result it cannot see.
 
 **Installing on the host is the one step CI cannot do.** GitHub's runners (and the Gitea runner VM) have no route to
@@ -580,8 +583,8 @@ not a separate decision. It:
 That patch check is the point. An install that lands its files but fails to patch looks identical to a good one until
 a container fails to create. A failure there is a failed release, not a flaky script.
 
-Currently released and installed on this host: **v1.1.0** (installed and checked 2026-11-13). The flash `.plg` shows
-`1.1.0`, `/var/log/plugins/unraid-secretsman.plg` is registered, the flash `.txz` md5 is `b2abc2b0…` (the `&md5;`),
+Currently released and installed on this host: **v1.1.1** (installed and checked 2026-11-13). The flash `.plg` shows
+`1.1.1`, `/var/log/plugins/unraid-secretsman.plg` is registered, the flash `.txz` md5 is `5bf56712…` (the `&md5;`),
 `Helpers.php` carries 1 `SECRETSMAN-PATCH-BEGIN` marker, and `/etc/unraid-version` is 7.3.4. Releases before 1.0.2 were
 published but never installed (the host ran 2026.08.25 until 1.0.2, for the sidecar reason in constraint 9). Do not
 trust `gh release list` as evidence of what is on the host; check `/boot/config/plugins/unraid-secretsman.plg`. The
@@ -616,6 +619,8 @@ see rules 3 and 6.
   verify, restore, and the retention sweep, which `@unlink`s archives, their HMAC sidecars and
   READMEs. A bug in the sweep destroys the backups; a bug in restore overwrites the live store
   with the wrong contents.
+- `plugin/scripts/backup_api.php` `case 'browse'` — lists directories for the folder picker; the `/mnt`+`/boot`
+  confinement in `secretsman_backup_browse()` is the boundary (tested, including `..` and symlink escapes).
 - `plugin/scripts/backup_api.php` `case 'restore'` — consumes an attacker-controlled `selected`
   filename and a base64 body. Its path-traversal guard is the boundary, and is the one web-layer
   behaviour with a dedicated test.
