@@ -20,8 +20,8 @@
 #      without that alias can set UNRAID_HOST (and optionally UNRAID_SSH_KEY) and
 #      the script connects as root@$UNRAID_HOST instead.
 #
-# raw.githubusercontent.com caches for max-age=300, and a 200 seconds after a
-# push does NOT mean the CDN edge the host hits has the new body — see the
+# (Delivery was GitHub until 1.1.2, where raw.githubusercontent.com cached for 300 s and a 200 seconds after a
+# push did NOT mean the CDN edge the host hit had the new body; Gitea has no CDN, but the check stays.) — see the
 # sibling repo unraid-docker-netman's CLAUDE.md for the incident where a stale,
 # internally-consistent .plg silently reinstalled the wrong version with no
 # error. This script refuses to install until the raw body's OWN &version; and
@@ -38,7 +38,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NAME="unraid-secretsman"
 PLG="$NAME.plg"
 GH_REPO="kmbrimble/unraid-secretsman"
-PLG_URL="https://raw.githubusercontent.com/$GH_REPO/main/$PLG"
+PLG_URL="https://git.kiztigs.com/$GH_REPO/raw/branch/main/$PLG"
 if [ -n "${UNRAID_HOST:-}" ]; then
   HOST="$UNRAID_HOST"
   SSH=(ssh -o StrictHostKeyChecking=no ${UNRAID_SSH_KEY:+-i "$UNRAID_SSH_KEY"} "root@$HOST")
@@ -59,14 +59,14 @@ done
 [ -n "$VERSION" ] || { echo "could not determine version"; exit 1; }
 
 echo "==> Release v$VERSION"
-gh release view "v$VERSION" --repo "$GH_REPO" --json tagName,assets \
-  -q '.tagName + "  assets: " + ([.assets[].name] | join(", "))'
+curl -fsSL "https://git.kiztigs.com/api/v1/repos/$GH_REPO/releases/tags/v$VERSION" \
+  | jq -r '.tag_name + "  assets: " + ([.assets[].name] | join(", "))'
 
-EXPECTED_MD5=$(curl -fsSL "https://github.com/$GH_REPO/releases/download/v$VERSION/$NAME.md5" | tr -d '[:space:]')
+EXPECTED_MD5=$(curl -fsSL "https://git.kiztigs.com/$GH_REPO/releases/download/v$VERSION/$NAME.md5" | tr -d '[:space:]')
 [ -n "$EXPECTED_MD5" ] || { echo "release has no $NAME.md5 asset"; exit 1; }
 echo "    package md5: $EXPECTED_MD5"
 
-echo "==> Waiting for raw.githubusercontent.com to serve v$VERSION (CDN cache is 5 min)"
+echo "==> Waiting for git.kiztigs.com to serve v$VERSION"
 for i in $(seq 1 40); do
   BODY=$(curl -fsSL -H 'Cache-Control: no-cache' "$PLG_URL" || true)
   RAW_VERSION=$(printf '%s' "$BODY" | sed -rn 's|^<!ENTITY version[[:space:]]+"([^"]+)">.*|\1|p')

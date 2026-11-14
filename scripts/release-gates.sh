@@ -1,6 +1,6 @@
 #!/bin/bash
 # Release gates for <version>, run by Gitea CI on an untagged version (so a bad release is caught in the PR) and again by
-# the GitHub release workflow when the mirrored tag arrives. Needs a full clone (tags) and python3.
+# the Gitea release workflow at the tag. Needs a full clone (tags) and python3.
 #
 #   1. unraid-secretsman.plg has a ###<version> CHANGES entry.
 #   2. Rule 7 (CLAUDE.md): if the patch layer changed since the previous tag, that CHANGES entry must record the

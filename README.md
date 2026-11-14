@@ -114,8 +114,8 @@ CLAUDE.md's "Insertion point" and rule 4 for why this is the whole point of the 
 
 Not in Community Applications. Install by URL from the **Plugins → Install Plugin** page, using
 the `.plg` URL from the latest
-[GitHub Release](https://github.com/kmbrimble/unraid-secretsman/releases). **No release has been
-cut yet** — see `CLAUDE.md`'s Phase roadmap for what's gating that.
+[Gitea release](https://git.kiztigs.com/kmbrimble/unraid-secretsman/releases), or paste
+`https://git.kiztigs.com/kmbrimble/unraid-secretsman/raw/branch/main/unraid-secretsman.plg` (LAN only).
 
 ## SECURITY
 

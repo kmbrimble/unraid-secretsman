@@ -58,7 +58,7 @@ recurring. (The stray `~/projects` skeleton this note used to describe is gone, 
 7. **Any change to the patch layer (Phase 2+) requires the recovery drill in `RECOVERY.md` to
    be re-run and confirmed working before that change ships.**
    Enforced at release time since 1.0.1 (now `scripts/release-gates.sh`, run by Gitea CI on the version-bump PR and again by
-   `.github/workflows/release.yml` on GitHub at the mirrored tag): the release fails if
+   `.gitea/workflows/release.yml` at the tag): the release fails if
    the patch layer changed since the previous tag and the new version's CHANGES entry does not
    record the outcome on a line starting `RECOVERY drill:`.
 
@@ -195,9 +195,8 @@ Packaging rules (strcmp versions, archive paths rooted at `usr/local/emhttp/plug
 stock-shaped `plugin/README.md`, never pre-placing files before testing an install, FILE/MD5 behaviour): see the
 `unraid-plugin-packaging` skill. What is specific to this repo:
 
-- Not going into Community Applications. Self-hosted `.plg` installed by URL from `raw.githubusercontent.com`, with
-  a packaged `.txz` attached to a GitHub Release. Those URLs deliberately still point at GitHub (see "Deploy and
-  verify").
+- Not going into Community Applications. Self-hosted `.plg` installed by URL from `git.kiztigs.com` (raw branch URL), with
+  a packaged `.txz` attached to a Gitea release (see "Forge" and "Deploy and verify").
 - `scripts/build-plugin.sh` assembles the installable tree. CI runs it (release-readiness on Gitea, then the GitHub
   release workflow at the mirrored tag). The archive is deterministic (sorted names, fixed mtime), so the md5 is the
   same on both runners. That determinism holds between the CI runners only: see "Deploy and verify".
@@ -514,7 +513,7 @@ for `nice`/`ionice`.**
 ## Deploy and verify
 
 Step-by-step release mechanics (worktree, PR, md5 from CI, merge, tag on Gitea, waiting for the mirror, watching the
-GitHub workflow, verifying assets) are in the `forge-release` skill. This section keeps what is specific to this repo.
+release workflow, verifying assets) are in the `forge-release` skill. This section keeps what is specific to this repo.
 The pre-2026-11-04 text is in `docs/history.md`.
 
 **Forge (changed 2 Nov 2026): Gitea is primary, GitHub is a read-only push mirror.** Develop against
@@ -522,8 +521,11 @@ The pre-2026-11-04 text is in `docs/history.md`.
 `github.com/kmbrimble/unraid-secretsman` receives every push to Gitea within about a minute. The push mirror is
 `sync_on_commit: true`, `interval: 10m0s` (read from Gitea's `push_mirrors` API, 2026-11-04). It **must never be pushed
 to directly**: the mirror force-syncs and prunes refs, so anything that exists only on GitHub is lost. GitHub has Issues,
-Wiki, Projects, Discussions and PRs switched off. The `.plg` URLs (`raw.githubusercontent.com/.../main/unraid-secretsman.plg`
-and the release assets) deliberately still point at GitHub.
+Wiki, Projects, Discussions and PRs switched off. **Delivery is from Gitea (since 1.1.2, 14 Nov 2026; Kieren's decision: Gitea
+delivers all his Unraid plugins, GitHub is for HACS add-ons only):** `pluginURL` is
+`https://git.kiztigs.com/kmbrimble/unraid-secretsman/raw/branch/main/unraid-secretsman.plg` and the `.txz`/`.md5` come from the Gitea release.
+The owner is public on Gitea (LAN-only behind Caddy's `@git_lan_only`), so no token is needed. Cost: plugin updates depend on the homelab
+being up and on the host's `git.kiztigs.com` hosts entry (`/boot/config/go`).
 `main` is protected on Gitea: changes go through a PR, both CI checks (`CI / php84 (pull_request)`,
 `CI / php81 (pull_request)`) must be green, and butler-bot merges its own green PRs (no human approval).
 
@@ -534,10 +536,12 @@ push mirror would discard it), so the md5 goes in *before* tagging:
    (`php84` job, only when `&version;` is untagged) runs `scripts/release-gates.sh` (CHANGES entry, Rule 7, strcmp
    ordering) and then `scripts/check-md5.sh`, which builds the package and fails with `set &md5; to <value>`. Push again
    with that value, then merge.
-2. Tag the merge commit on Gitea: `git tag v<version> && git push origin v<version>`. The tag is mirrored and
-   `.github/workflows/release.yml` on GitHub reruns the gates, lint and tests, rebuilds, requires the same md5, and
-   publishes the Release with the `.txz` and `.md5` attached. Its `workflow_dispatch` is a dry run that only reports
-   the md5.
+2. Tag the merge commit on Gitea: `git tag v<version> && git push origin v<version>`. The tag runs
+   `.gitea/workflows/release.yml`: the gates, lint and tests, then `scripts/gitea-release.sh` (shared by all plugin repos; canonical copy
+   in unraid-flightplan) rebuilds, requires the same md5 and strcmp ordering, creates the **Gitea release** and attaches the `.txz` and
+   `.md5`, then reads them back. Token: the job token (or Actions secret `RELEASE_TOKEN` if set). Its `workflow_dispatch` is a dry run
+   by default, or with `tag` + `publish` recovers an existing tag whose run failed (tags never move). The mirrored
+   `.github/workflows/release.yml` still exists and publishes the same bytes to a GitHub release that nothing depends on.
 
 Three things stay by hand, deliberately:
 

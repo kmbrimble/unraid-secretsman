@@ -1,8 +1,8 @@
 #!/bin/bash
 # Assembles the installable plugin tree and packages it as a .txz + .md5,
-# for attaching to a GitHub Release (see CLAUDE.md "Shipping model").
+# for attaching to a Gitea release (see CLAUDE.md "Shipping model").
 #
-# Run by Gitea CI (release-readiness) and by .github/workflows/release.yml on a mirrored v* tag, and available
+# Run by Gitea CI (release-readiness) and by .gitea/workflows/release.yml on a v* tag, and available
 # locally for a test build (needs GNU tar and xz); a local build gives the same md5 as CI. Building a package is not the same
 # as publishing it: this script only produces local files — it neither tags nor
 # publishes anything. See CLAUDE.md "Deploy and verify".
@@ -97,5 +97,5 @@ echo "  md5: $MD5"
 echo
 echo "This is a local build. A release is: bump &version; in unraid-secretsman.plg, write its ###<version>"
 echo "  CHANGES entry, set &md5; to the md5 above (CI tells you the value), merge the PR on Gitea, then tag"
-echo "  v<version> on Gitea. The tag is mirrored to GitHub and .github/workflows/release.yml publishes it."
+echo "  v<version> on Gitea. The tag runs .gitea/workflows/release.yml, which publishes the Gitea release."
 echo "  Then run scripts/install-on-host.sh to put it on the Unraid host. See CLAUDE.md \"Deploy and verify\"."

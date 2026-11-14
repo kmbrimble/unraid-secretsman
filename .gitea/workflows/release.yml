@@ -1,0 +1,92 @@
+name: Release
+
+# Gitea is the delivery source for this plugin: installed servers fetch the .plg from the raw branch URL and the .txz
+# from this repository's Gitea release. A release is a v* tag pushed to Gitea. This workflow runs the repo's checks,
+# rebuilds the package from the tagged source (deterministic), requires the committed .plg &md5; to equal the rebuilt
+# md5, requires the version to sort after every other tag (strcmp), then creates the Gitea release and attaches the
+# assets via scripts/gitea-release.sh (shared across the plugin repos; canonical copy in unraid-flightplan). It never
+# commits, pushes or tags anything.
+#
+# workflow_dispatch: dry run by default (builds, prints the md5, publishes nothing). To recover a tag whose run failed
+# (tags are never moved), dispatch with `tag` set to the existing tag and `publish` true; the script is idempotent.
+#
+# Token: the job token by default; a repo/org Actions secret named RELEASE_TOKEN (release write on this repo only) wins if set.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build (empty = the branch head, dry run only)'
+        required: false
+        default: ''
+      publish:
+        description: 'Publish the release for `tag` (otherwise dry run)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    env:
+      TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+      PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'push' && github.ref || (inputs.tag != '' && format('refs/tags/{0}', inputs.tag)) || github.ref }}
+
+      - name: Work out the version
+        run: |
+          if [ -n "$TAG" ]; then VERSION="${TAG#v}"
+          else VERSION=$(sed -rn 's|^<!ENTITY version[[:space:]]+"([^"]+)">.*|\1|p' *.plg); fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Release gates (CHANGES entry, Rule 7, version ordering)
+        run: bash scripts/release-gates.sh "$VERSION"
+
+      # The UI build must give the same bytes on every runner: same pinned Node, lockfile-pinned packages (npm ci).
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22.23.4'
+
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # v2
+        with:
+          php-version: '8.4'
+          extensions: simplexml
+
+      # Same gate as the primary's CI, repeated deliberately: a release must stand on its own checks.
+
+      - name: Lint
+        run: find src plugin tests -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: UI unit tests and design contrast check
+        run: cd ui && npm ci --no-audit --no-fund && npm test && npm run check:contrast
+
+      - name: Test
+        run: php tests/run.php
+
+      - name: Dry run (no tag given)
+        if: env.TAG == ''
+        run: |
+          VERSION=$(sed -rn 's|^<!ENTITY version[[:space:]]+"([^"]+)">.*|\1|p' *.plg)
+          bash scripts/gitea-release.sh "v$VERSION" --dry-run
+
+      - name: Dry run (publish not requested)
+        if: env.TAG != '' && env.PUBLISH != 'true'
+        run: bash scripts/gitea-release.sh "$TAG" --dry-run
+
+      - name: Build, verify and publish the Gitea release
+        if: env.TAG != '' && env.PUBLISH == 'true'
+        env:
+          GITEA_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          GITEA_API_URL: ${{ github.server_url }}/api/v1
+        run: bash scripts/gitea-release.sh "$TAG"
