@@ -540,8 +540,7 @@ push mirror would discard it), so the md5 goes in *before* tagging:
    `.gitea/workflows/release.yml`: the gates, lint and tests, then `scripts/gitea-release.sh` (shared by all plugin repos; canonical copy
    in unraid-flightplan) rebuilds, requires the same md5 and strcmp ordering, creates the **Gitea release** and attaches the `.txz` and
    `.md5`, then reads them back. Token: the job token (or Actions secret `RELEASE_TOKEN` if set). Its `workflow_dispatch` is a dry run
-   by default, or with `tag` + `publish` recovers an existing tag whose run failed (tags never move). The mirrored
-   `.github/workflows/release.yml` still exists and publishes the same bytes to a GitHub release that nothing depends on.
+   by default, or with `tag` + `publish` recovers an existing tag whose run failed (tags never move). The GitHub copy has no release workflow any more (removed in the 15 Nov 2026 GitHub exit); Gitea is the only publisher.
 
 Three things stay by hand, deliberately:
 
